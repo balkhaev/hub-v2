@@ -21,6 +21,44 @@ function actorIdempotencyKey(jobId, shotId) {
   return `${jobId}:${shotId}`;
 }
 
+function normalizedProviderOutputs(providerOutput) {
+  if (Array.isArray(providerOutput)) return providerOutput;
+  if (Array.isArray(providerOutput?.outputs)) return providerOutput.outputs;
+  if (providerOutput && typeof providerOutput === "object" && (providerOutput.url || providerOutput.assetUrl)) {
+    return [providerOutput];
+  }
+  return [];
+}
+
+function outputQuality(output) {
+  const raw =
+    output?.quality?.total ??
+    output?.qualityScore ??
+    output?.score ??
+    output?.metrics?.qualityScore ??
+    null;
+  const number = Number(raw);
+  return Number.isFinite(number) ? Math.max(0, Math.min(1, number)) : null;
+}
+
+export function selectBestProviderOutput(generation) {
+  const outputs = normalizedProviderOutputs(generation.providerOutput);
+  if (outputs.length === 0) return null;
+  const ranked = outputs
+    .map((output, index) => ({ output, index, quality: outputQuality(output) }))
+    .sort((a, b) => (b.quality ?? -1) - (a.quality ?? -1) || a.index - b.index);
+  const selected = ranked[0];
+  return {
+    generationId: generation.id,
+    shotId: generation.shotId ?? null,
+    providerJobId: generation.providerJobId ?? null,
+    outputId: selected.output.id ?? selected.output.outputId ?? `output-${selected.index + 1}`,
+    url: selected.output.url ?? selected.output.assetUrl ?? null,
+    quality: selected.quality,
+    providerOutput: structuredClone(selected.output),
+  };
+}
+
 export class CreativeService {
   /**
    * @param {{repository:any, personaService:any, generationDispatcher?:any, publicOrigin:string, clock?:()=>Date}} options
@@ -187,18 +225,48 @@ export class CreativeService {
       next.stage = "render_failed";
       next.progress = Math.max(next.progress, 0.5);
     } else if (succeeded === total) {
-      next.status = "ready_for_review";
-      next.stage = "ideal_render_ready";
-      next.progress = 0.95;
-      next.stageHistory.push({ stage: "all_shots_rendered", at: now, count: total });
+      const renderSelections = generations.map(selectBestProviderOutput);
+      const missingSelections = renderSelections.filter((selection) => selection === null).length;
+      if (missingSelections > 0) {
+        next.status = "evaluating";
+        next.stage = "render_manifest_incomplete";
+        next.progress = 0.9;
+        next.renderSummary.missingSelections = missingSelections;
+      } else {
+        next.bestVersion.renderSelections = renderSelections;
+        next.bestVersion.assemblyManifest = {
+          version: 1,
+          creativeJobId: next.id,
+          creativeVersionId: next.bestVersion.id,
+          aspectRatio: next.brief.aspectRatio,
+          durationSeconds: next.brief.durationSeconds,
+          orderedShots: renderSelections.map((selection, ordinal) => ({
+            ordinal,
+            shotId: selection.shotId,
+            generationId: selection.generationId,
+            providerJobId: selection.providerJobId,
+            selectedOutputId: selection.outputId,
+            url: selection.url,
+            quality: selection.quality,
+          })),
+        };
+        next.status = "ready_for_review";
+        next.stage = "ideal_render_package_ready";
+        next.progress = 0.95;
+        next.stageHistory.push({
+          stage: "best_shot_outputs_selected",
+          at: now,
+          count: total,
+        });
+      }
     } else if (active > 0) {
       next.status = "generating";
       next.stage = "rendering_shots";
       next.progress = Math.max(0.48, 0.48 + (succeeded / total) * 0.4);
     }
     next.updatedAt = now;
-    const updated = await this.repository.updateCreativeJob(next);
-    return this.#payload(updated);
+    const stored = await this.repository.updateCreativeJob(next);
+    return this.#payload(stored);
   }
 
   #payload(job) {
