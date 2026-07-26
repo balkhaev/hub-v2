@@ -111,3 +111,65 @@ test("selects the strongest provider output for a shot", () => {
   assert.equal(selected.outputId, "b");
   assert.equal(selected.quality, 0.93);
 });
+
+test("assembles selected shots and exposes a final asset", async () => {
+  const dispatcher = {
+    configured: true,
+    async dispatch() {},
+    async reconcile() {},
+    async dispatchAssembly() {
+      return {
+        providerJobId: "assembly-1",
+        status: "queued",
+        providerState: { id: "assembly-1", status: "IN_QUEUE" },
+        dispatchedAt: "2026-07-26T16:00:00.000Z",
+      };
+    },
+    async reconcileAssembly() {
+      return {
+        providerJobId: "assembly-1",
+        status: "succeeded",
+        providerState: { id: "assembly-1", status: "COMPLETED" },
+        output: {
+          url: "https://media/final.mp4",
+          sha256: "a".repeat(64),
+          durationSeconds: 30,
+          width: 1080,
+          height: 1920,
+        },
+      };
+    },
+  };
+  const { repository, service } = fixture({ dispatcher });
+  const created = await service.createShortDrama("ws_demo", {
+    premise: "Последнее сообщение приходит в момент прощания",
+    durationSeconds: 30,
+  }, "codex");
+
+  for (const generationId of created.idealVersion.generationIds) {
+    const generation = await repository.getGeneration("ws_demo", generationId);
+    generation.status = "succeeded";
+    generation.providerJobId = `rp-${generation.shotId}`;
+    generation.providerOutput = {
+      outputs: [
+        {
+          id: `${generation.shotId}-take-1`,
+          url: `https://media/${generation.shotId}.mp4`,
+          quality: { total: 0.9 },
+        },
+      ],
+    };
+    await repository.updateGeneration(generation);
+  }
+
+  const assembling = await service.reconcileCreativeJob("ws_demo", created.creativeJob.id);
+  assert.equal(assembling.creativeJob.stage, "assembling_final");
+  assert.equal(assembling.creativeJob.assemblyProviderJobId, "assembly-1");
+  assert.equal(assembling.idealVersion.assemblyManifest.orderedShots.length, created.idealVersion.generationIds.length);
+
+  const final = await service.reconcileCreativeJob("ws_demo", created.creativeJob.id);
+  assert.equal(final.creativeJob.status, "ready_for_review");
+  assert.equal(final.creativeJob.stage, "final_asset_ready");
+  assert.equal(final.creativeJob.finalAsset.url, "https://media/final.mp4");
+  assert.equal(final.widget.snapshot.finalAsset.url, "https://media/final.mp4");
+});
