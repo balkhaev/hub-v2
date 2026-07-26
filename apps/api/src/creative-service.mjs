@@ -95,7 +95,14 @@ export class CreativeService {
           },
           actorId,
         );
-        generationIds.push(generationPayload.generation.id);
+        const generation = {
+          ...generationPayload.generation,
+          creativeJobId: jobId,
+          creativeVersionId: bestVersion.id,
+          shotId: shot.shotId,
+        };
+        await this.repository.updateGeneration(generation);
+        generationIds.push(generation.id);
       }
     }
     bestVersion.generationIds = generationIds;
