@@ -1,5 +1,10 @@
 import { HttpError } from "./errors.mjs";
 
+function authorizationValue(apiKey) {
+  const normalized = String(apiKey ?? "").trim();
+  return /^Bearer\s+/i.test(normalized) ? normalized : `Bearer ${normalized}`;
+}
+
 export class RunpodClient {
   /** @param {{apiKey?:string|null, endpointId?:string|null, fetchImpl?:typeof fetch, baseUrl?:string}} options */
   constructor({ apiKey = null, endpointId = null, fetchImpl = fetch, baseUrl = "https://api.runpod.ai/v2" } = {}) {
@@ -27,7 +32,8 @@ export class RunpodClient {
     const response = await this.fetchImpl(`${this.baseUrl}/${this.endpointId}${suffix}`, {
       method,
       headers: {
-        authorization: this.apiKey,
+        authorization: authorizationValue(this.apiKey),
+        accept: "application/json",
         "content-type": "application/json",
       },
       body: body === undefined ? undefined : JSON.stringify(body),
