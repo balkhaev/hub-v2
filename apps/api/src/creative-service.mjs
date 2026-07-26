@@ -20,6 +20,10 @@ function sha256Json(value) {
 function actorIdempotencyKey(jobId, shotId) {
   return `${jobId}:${shotId}`;
 }
+function recordStage(job, stage, payload = {}) {
+  if (job.stageHistory.some((item) => item.stage === stage)) return;
+  job.stageHistory.push({ stage, ...payload });
+}
 
 function normalizedProviderOutputs(providerOutput) {
   if (Array.isArray(providerOutput)) return providerOutput;
@@ -179,7 +183,10 @@ export class CreativeService {
         for (const generationId of generationIds) {
           await this.generationDispatcher.dispatch(workspaceId, generationId);
         }
-        stored.stageHistory.push({ stage: "runpod_jobs_dispatched", at: this.clock().toISOString(), count: generationIds.length });
+        recordStage(stored, "runpod_jobs_dispatched", {
+          at: this.clock().toISOString(),
+          count: generationIds.length,
+        });
         stored.updatedAt = this.clock().toISOString();
         await this.repository.updateCreativeJob(stored);
       } catch (error) {
@@ -191,7 +198,7 @@ export class CreativeService {
           at: this.clock().toISOString(),
         };
         stored.updatedAt = this.clock().toISOString();
-        stored.stageHistory.push({ stage: "runpod_dispatch_failed", at: stored.updatedAt });
+        recordStage(stored, "runpod_dispatch_failed", { at: stored.updatedAt });
         await this.repository.updateCreativeJob(stored);
         throw error;
       }
@@ -213,6 +220,11 @@ export class CreativeService {
   async reconcileCreativeJob(workspaceId, jobId) {
     const job = await this.repository.getCreativeJob(workspaceId, jobId);
     if (!job) throw new HttpError(404, "creative_job_not_found", "Creative job not found");
+
+    if (job.assemblyProviderJobId && this.generationDispatcher?.configured) {
+      return this.#reconcileAssembly(job);
+    }
+
     const generationIds = job.bestVersion?.generationIds ?? [];
     if (generationIds.length === 0) return this.#payload(job);
 
@@ -262,21 +274,85 @@ export class CreativeService {
             quality: selection.quality,
           })),
         };
-        next.status = "ready_for_review";
-        next.stage = "ideal_render_package_ready";
-        next.progress = 0.95;
-        next.stageHistory.push({
-          stage: "best_shot_outputs_selected",
+        recordStage(next, "best_shot_outputs_selected", {
           at: now,
           count: total,
         });
+
+        if (this.generationDispatcher?.configured) {
+          try {
+            const assembly = await this.generationDispatcher.dispatchAssembly(next);
+            next.assemblyProviderJobId = assembly.providerJobId;
+            next.assemblyProviderState = assembly.providerState;
+            next.assemblyDispatchedAt = assembly.dispatchedAt;
+            next.status = "generating";
+            next.stage = "assembling_final";
+            next.progress = 0.96;
+            recordStage(next, "final_assembly_dispatched", {
+              at: assembly.dispatchedAt,
+              providerJobId: assembly.providerJobId,
+            });
+          } catch (error) {
+            next.status = "failed";
+            next.stage = "assembly_dispatch_failed";
+            next.lastError = {
+              code: error.code ?? "assembly_dispatch_failed",
+              message: error.message,
+              at: this.clock().toISOString(),
+            };
+            next.updatedAt = this.clock().toISOString();
+            await this.repository.updateCreativeJob(next);
+            throw error;
+          }
+        } else {
+          next.status = "ready_for_review";
+          next.stage = "ideal_render_package_ready";
+          next.progress = 0.95;
+        }
       }
     } else if (active > 0) {
       next.status = "generating";
       next.stage = "rendering_shots";
       next.progress = Math.max(0.48, 0.48 + (succeeded / total) * 0.4);
     }
-    next.updatedAt = now;
+    next.updatedAt = this.clock().toISOString();
+    const stored = await this.repository.updateCreativeJob(next);
+    return this.#payload(stored);
+  }
+
+  async #reconcileAssembly(job) {
+    const assembly = await this.generationDispatcher.reconcileAssembly(job.assemblyProviderJobId);
+    const next = structuredClone(job);
+    next.assemblyProviderState = assembly.providerState;
+    next.updatedAt = this.clock().toISOString();
+
+    if (assembly.status === "succeeded") {
+      next.finalAsset = assembly.output;
+      next.status = "ready_for_review";
+      next.stage = "final_asset_ready";
+      next.progress = 0.99;
+      recordStage(next, "final_asset_ready", {
+        at: next.updatedAt,
+        providerJobId: assembly.providerJobId,
+      });
+    } else if (["failed", "cancelled"].includes(assembly.status)) {
+      next.status = "failed";
+      next.stage = "assembly_failed";
+      next.lastError = {
+        code: "assembly_failed",
+        message: `Final assembly ended with status ${assembly.status}`,
+        at: next.updatedAt,
+      };
+      recordStage(next, "final_assembly_failed", {
+        at: next.updatedAt,
+        providerJobId: assembly.providerJobId,
+      });
+    } else {
+      next.status = "generating";
+      next.stage = "assembling_final";
+      next.progress = Math.max(next.progress, 0.96);
+    }
+
     const stored = await this.repository.updateCreativeJob(next);
     return this.#payload(stored);
   }
