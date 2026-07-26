@@ -51,6 +51,10 @@ function integerBetween(value, field, fallback, min, max) {
   }
   return number;
 }
+function optionalIntegerBetween(value, field, min, max) {
+  if (value === undefined || value === null || value === "") return null;
+  return integerBetween(value, field, min, min, max);
+}
 function numberBetween(value, field, fallback, min, max) {
   const number = value === undefined || value === null ? fallback : Number(value);
   if (!Number.isFinite(number) || number < min || number > max) {
@@ -71,11 +75,80 @@ function optionalPositiveInteger(value, field) {
   if (!Number.isInteger(number) || number < 1) throw new TypeError(`${field} must be a positive integer`);
   return number;
 }
+function parseCandidateDrafts(value, durationSeconds) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length < 2 || value.length > 6) {
+    throw new TypeError("candidateDrafts must contain between two and six drafts");
+  }
+  return value.map((draft, draftIndex) => {
+    if (!draft || typeof draft !== "object") {
+      throw new TypeError(`candidateDrafts[${draftIndex}] must be an object`);
+    }
+    const rawBeats = draft.beats ?? [];
+    if (!Array.isArray(rawBeats) || rawBeats.length < 3 || rawBeats.length > 8) {
+      throw new TypeError(`candidateDrafts[${draftIndex}].beats must contain between three and eight beats`);
+    }
+    const beats = rawBeats.map((beat, beatIndex) => {
+      if (!beat || typeof beat !== "object") {
+        throw new TypeError(`candidateDrafts[${draftIndex}].beats[${beatIndex}] must be an object`);
+      }
+      return {
+        beat: optionalString(beat.beat, `candidateDrafts[${draftIndex}].beats[${beatIndex}].beat`, 80),
+        atSecond: optionalIntegerBetween(
+          beat.atSecond,
+          `candidateDrafts[${draftIndex}].beats[${beatIndex}].atSecond`,
+          0,
+          durationSeconds,
+        ),
+        purpose: optionalString(
+          beat.purpose,
+          `candidateDrafts[${draftIndex}].beats[${beatIndex}].purpose`,
+          300,
+        ),
+        action: requiredString(
+          beat.action,
+          `candidateDrafts[${draftIndex}].beats[${beatIndex}].action`,
+          1_000,
+        ),
+      };
+    });
+    const rawDialogue = draft.dialogue ?? [];
+    if (!Array.isArray(rawDialogue) || rawDialogue.length > 16) {
+      throw new TypeError(`candidateDrafts[${draftIndex}].dialogue must have at most sixteen lines`);
+    }
+    const dialogue = rawDialogue.map((line, lineIndex) => {
+      if (!line || typeof line !== "object") {
+        throw new TypeError(`candidateDrafts[${draftIndex}].dialogue[${lineIndex}] must be an object`);
+      }
+      return {
+        speaker: requiredString(
+          line.speaker,
+          `candidateDrafts[${draftIndex}].dialogue[${lineIndex}].speaker`,
+          80,
+        ),
+        line: requiredString(
+          line.line,
+          `candidateDrafts[${draftIndex}].dialogue[${lineIndex}].line`,
+          500,
+        ),
+      };
+    });
+    return {
+      title: optionalString(draft.title, `candidateDrafts[${draftIndex}].title`, 160),
+      logline: requiredString(draft.logline, `candidateDrafts[${draftIndex}].logline`, 600),
+      hook: requiredString(draft.hook, `candidateDrafts[${draftIndex}].hook`, 600),
+      beats,
+      dialogue,
+      payoff: requiredString(draft.payoff, `candidateDrafts[${draftIndex}].payoff`, 800),
+    };
+  });
+}
 
 export function parseCreateShortDrama(input) {
   if (!input || typeof input !== "object") throw new TypeError("Request body must be an object");
   const platform = enumValue(input.platform ?? "instagram_reels", "platform", SHORT_DRAMA_PLATFORMS);
   const usage = enumValue(input.usage ?? "organic_social", "usage", USAGES);
+  const durationSeconds = integerBetween(input.durationSeconds, "durationSeconds", 45, 10, 180);
   const rawCharacters = input.characters ?? [];
   if (!Array.isArray(rawCharacters) || rawCharacters.length > 4) {
     throw new TypeError("characters must be an array with at most four entries");
@@ -100,11 +173,12 @@ export function parseCreateShortDrama(input) {
     };
   });
 
+  const candidateDrafts = parseCandidateDrafts(input.candidateDrafts, durationSeconds);
   return {
     idempotencyKey: optionalString(input.idempotencyKey, "idempotencyKey", 160),
     title: optionalString(input.title, "title", 160),
     premise: requiredString(input.premise, "premise"),
-    durationSeconds: integerBetween(input.durationSeconds, "durationSeconds", 45, 10, 180),
+    durationSeconds,
     platform,
     aspectRatio: enumValue(input.aspectRatio ?? "9:16", "aspectRatio", ["9:16", "1:1", "4:5", "16:9"]),
     language: optionalString(input.language, "language", 24) ?? "ru",
@@ -115,8 +189,15 @@ export function parseCreateShortDrama(input) {
     mustInclude: stringList(input.mustInclude, "mustInclude", 20, 200),
     mustAvoid: stringList(input.mustAvoid, "mustAvoid", 20, 200),
     characters,
+    candidateDrafts,
     usage,
-    variationCount: integerBetween(input.variationCount, "variationCount", 3, 2, 6),
+    variationCount: integerBetween(
+      input.variationCount,
+      "variationCount",
+      candidateDrafts.length || 3,
+      2,
+      6,
+    ),
     renderVariantsPerShot: integerBetween(input.renderVariantsPerShot, "renderVariantsPerShot", 2, 1, 4),
     maxIterations: integerBetween(input.maxIterations, "maxIterations", 3, 1, 5),
     qualityThreshold: numberBetween(input.qualityThreshold, "qualityThreshold", 0.86, 0.65, 0.98),
@@ -147,6 +228,7 @@ export function creativeJobWidget(job) {
             logline: best.logline,
             shotCount: best.shotPlan.length,
             generationCount: best.generationIds.length,
+            renderSelectionCount: best.renderSelections?.length ?? 0,
           }
         : null,
       hubUrl: job.hubUrl,
