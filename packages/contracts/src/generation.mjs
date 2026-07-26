@@ -1,7 +1,14 @@
+import { requireId } from "./ids.mjs";
 import { createWidget } from "./widgets.mjs";
 
-const OUTPUT_TYPES = Object.freeze(["image", "video"]);
-const ASPECT_RATIOS = Object.freeze(["1:1", "4:5", "9:16", "16:9"]);
+export const GENERATION_OUTPUT_TYPES = Object.freeze(["image", "video"]);
+export const GENERATION_ASPECT_RATIOS = Object.freeze(["1:1", "4:5", "9:16", "16:9"]);
+export const GENERATION_USAGES = Object.freeze([
+  "internal_concept",
+  "organic_social",
+  "paid_media",
+  "owned_media",
+]);
 
 /** @param {unknown} value @param {string} field @param {number} max */
 function requiredString(value, field, max = 4_000) {
@@ -13,6 +20,12 @@ function requiredString(value, field, max = 4_000) {
     throw new TypeError(`${field} must be at most ${max} characters`);
   }
   return normalized;
+}
+
+/** @param {unknown} value @param {string} field @param {number} max */
+function optionalString(value, field, max = 4_000) {
+  if (value === undefined || value === null || value === "") return null;
+  return requiredString(value, field, max);
 }
 
 /** @param {unknown} value @param {string} field @param {readonly string[]} allowed */
@@ -32,12 +45,31 @@ function numberBetween(value, field, fallback) {
   return number;
 }
 
+/** @param {unknown} value @param {string} field */
+function optionalPositiveInteger(value, field) {
+  if (value === undefined || value === null || value === "") return null;
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < 1) {
+    throw new TypeError(`${field} must be a positive integer`);
+  }
+  return number;
+}
+
+/** @param {unknown} value */
+function optionalSeed(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < 0 || number > 0xffffffff) {
+    throw new TypeError("seed must be an integer between 0 and 4294967295");
+  }
+  return number;
+}
+
 /** @param {unknown} input */
 export function parseGenerationRequest(input) {
   if (!input || typeof input !== "object") {
     throw new TypeError("Request body must be an object");
   }
-
   if (!Array.isArray(input.personaBindings) || input.personaBindings.length === 0) {
     throw new TypeError("personaBindings must contain at least one persona");
   }
@@ -50,7 +82,11 @@ export function parseGenerationRequest(input) {
     if (!binding || typeof binding !== "object") {
       throw new TypeError(`personaBindings[${index}] must be an object`);
     }
-    const personaId = requiredString(binding.personaId, `personaBindings[${index}].personaId`, 80);
+    const personaId = requireId(
+      binding.personaId,
+      `personaBindings[${index}].personaId`,
+      "per",
+    );
     if (seen.has(personaId)) {
       throw new TypeError(`personaBindings contains duplicate personaId: ${personaId}`);
     }
@@ -58,13 +94,31 @@ export function parseGenerationRequest(input) {
 
     return {
       personaId,
+      personaVersion: optionalPositiveInteger(
+        binding.personaVersion,
+        `personaBindings[${index}].personaVersion`,
+      ),
+      referenceId:
+        binding.referenceId === undefined || binding.referenceId === null
+          ? null
+          : requireId(
+              binding.referenceId,
+              `personaBindings[${index}].referenceId`,
+              "pref",
+            ),
       role: requiredString(binding.role ?? "subject", `personaBindings[${index}].role`, 80),
       referenceStrength: numberBetween(
         binding.referenceStrength,
         `personaBindings[${index}].referenceStrength`,
         0.8,
       ),
-      preserveFace: binding.preserveFace !== false,
+      identityMode: enumValue(
+        binding.identityMode ?? "balanced",
+        `personaBindings[${index}].identityMode`,
+        ["strict", "balanced", "loose"],
+      ),
+      preserveFace:
+        binding.preserveFace === undefined ? null : binding.preserveFace !== false,
       preserveWardrobe: binding.preserveWardrobe === true,
     };
   });
@@ -75,18 +129,30 @@ export function parseGenerationRequest(input) {
   }
 
   return {
+    idempotencyKey: optionalString(input.idempotencyKey, "idempotencyKey", 160),
     prompt: requiredString(input.prompt, "prompt"),
-    negativePrompt:
-      typeof input.negativePrompt === "string" && input.negativePrompt.trim()
-        ? input.negativePrompt.trim().slice(0, 4_000)
-        : null,
-    outputType: enumValue(input.outputType ?? "image", "outputType", OUTPUT_TYPES),
-    aspectRatio: enumValue(input.aspectRatio ?? "9:16", "aspectRatio", ASPECT_RATIOS),
+    negativePrompt: optionalString(input.negativePrompt, "negativePrompt"),
+    outputType: enumValue(
+      input.outputType ?? "image",
+      "outputType",
+      GENERATION_OUTPUT_TYPES,
+    ),
+    aspectRatio: enumValue(
+      input.aspectRatio ?? "9:16",
+      "aspectRatio",
+      GENERATION_ASPECT_RATIOS,
+    ),
+    usage: enumValue(input.usage ?? "internal_concept", "usage", GENERATION_USAGES),
     count,
-    workflowId:
-      typeof input.workflowId === "string" && input.workflowId.trim()
-        ? input.workflowId.trim().slice(0, 120)
-        : "persona-reference-v1",
+    seed: optionalSeed(input.seed),
+    workflowId: optionalString(input.workflowId, "workflowId", 120) ?? "persona-reference-v1",
+    workflowVersion: optionalString(input.workflowVersion, "workflowVersion", 120) ?? "1",
+    requestedModelId: optionalString(input.requestedModelId, "requestedModelId", 160),
+    requestedModelVersion: optionalString(
+      input.requestedModelVersion,
+      "requestedModelVersion",
+      160,
+    ),
     personaBindings,
   };
 }
@@ -101,16 +167,22 @@ export function generationRequestWidget(generation) {
       prompt: generation.input.prompt,
       outputType: generation.input.outputType,
       aspectRatio: generation.input.aspectRatio,
+      usage: generation.input.usage,
       count: generation.input.count,
+      seed: generation.input.seed,
       workflowId: generation.input.workflowId,
+      workflowVersion: generation.input.workflowVersion,
+      inputHash: generation.inputHash,
       personas: generation.personaSnapshots.map((snapshot) => ({
         personaId: snapshot.personaId,
         displayName: snapshot.displayName,
         personaVersion: snapshot.personaVersion,
+        personaVersionId: snapshot.personaVersionId,
         referenceId: snapshot.reference.id,
         referenceSha256: snapshot.reference.sha256,
         role: snapshot.role,
         referenceStrength: snapshot.referenceStrength,
+        identityMode: snapshot.identityMode,
       })),
       provider: generation.provider,
       createdAt: generation.createdAt,
@@ -121,7 +193,7 @@ export function generationRequestWidget(generation) {
         label: "Send to Runpod",
         requiredRole: "content_editor",
         confirmation: true,
-        input: { generationId: generation.id },
+        input: { generationId: generation.id, inputHash: generation.inputHash },
       },
       {
         command: "generation.cancel",
