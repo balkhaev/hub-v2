@@ -2,15 +2,17 @@ import { createServer } from "node:http";
 import { AtomicJsonFileStore } from "./json-store.mjs";
 import { loadConfig } from "./config.mjs";
 import { createHttpHandler } from "./http.mjs";
+import { MediaSigner } from "./media-signer.mjs";
 import { LocalObjectStore } from "./object-store.mjs";
 import { PersonaService } from "./persona-service.mjs";
 import { JsonHubRepository } from "./repositories.mjs";
 
 const config = loadConfig();
 const store = new AtomicJsonFileStore(config.databaseFile, () => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   personas: [],
   references: [],
+  personaVersions: [],
   generations: [],
 }));
 const repository = new JsonHubRepository(store);
@@ -18,9 +20,14 @@ const objectStore = new LocalObjectStore({
   rootDir: config.objectRoot,
   maxImageBytes: config.maxImageBytes,
 });
+const mediaSigner = new MediaSigner({
+  secret: config.mediaSigningSecret,
+  ttlSeconds: config.mediaUrlTtlSeconds,
+});
 const service = new PersonaService({
   repository,
   objectStore,
+  mediaSigner,
   publicOrigin: config.publicOrigin,
 });
 const server = createServer(
@@ -29,6 +36,7 @@ const server = createServer(
     objectStore,
     webRoot: config.webRoot,
     requireContextHeaders: config.requireContextHeaders,
+    allowedOrigins: config.allowedOrigins,
   }),
 );
 
