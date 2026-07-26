@@ -19,7 +19,7 @@ export function normalizeError(error) {
   if (error instanceof HttpError) {
     return error;
   }
-  if (error instanceof TypeError) {
+  if (error instanceof TypeError || error instanceof URIError) {
     return new HttpError(400, "validation_error", error.message);
   }
 
