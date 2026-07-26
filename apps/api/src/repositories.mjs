@@ -13,6 +13,16 @@ function initialState() {
   return ensureCollections({ schemaVersion: 2 });
 }
 
+function assertSameIdempotentRequest(existing, generation) {
+  if (existing.requestHash !== generation.requestHash) {
+    throw new HttpError(
+      409,
+      "idempotency_conflict",
+      "Idempotency key was already used for a different generation request",
+    );
+  }
+}
+
 export class JsonHubRepository {
   /** @param {{read: Function, mutate: Function}} store */
   constructor(store) {
@@ -94,6 +104,14 @@ export class JsonHubRepository {
     });
   }
 
+  async getGenerationByIdempotencyKey(workspaceId, idempotencyKey) {
+    const state = ensureCollections(await this.store.read());
+    return state.generations.find(
+      (item) =>
+        item.workspaceId === workspaceId && item.idempotencyKey === idempotencyKey,
+    ) ?? null;
+  }
+
   async createGeneration(generation) {
     return this.store.mutate((rawDraft) => {
       const draft = ensureCollections(rawDraft);
@@ -103,13 +121,7 @@ export class JsonHubRepository {
           item.idempotencyKey === generation.idempotencyKey,
       );
       if (existing) {
-        if (existing.inputHash !== generation.inputHash) {
-          throw new HttpError(
-            409,
-            "idempotency_conflict",
-            "Idempotency key was already used for a different generation request",
-          );
-        }
+        assertSameIdempotentRequest(existing, generation);
         return existing;
       }
       draft.generations.push(generation);
@@ -194,6 +206,15 @@ export class MemoryHubRepository {
     return structuredClone(nextPersona);
   }
 
+  async getGenerationByIdempotencyKey(workspaceId, idempotencyKey) {
+    const item = this.state.generations.find(
+      (candidate) =>
+        candidate.workspaceId === workspaceId &&
+        candidate.idempotencyKey === idempotencyKey,
+    );
+    return item ? structuredClone(item) : null;
+  }
+
   async createGeneration(generation) {
     const existing = this.state.generations.find(
       (item) =>
@@ -201,13 +222,7 @@ export class MemoryHubRepository {
         item.idempotencyKey === generation.idempotencyKey,
     );
     if (existing) {
-      if (existing.inputHash !== generation.inputHash) {
-        throw new HttpError(
-          409,
-          "idempotency_conflict",
-          "Idempotency key was already used for a different generation request",
-        );
-      }
+      assertSameIdempotentRequest(existing, generation);
       return structuredClone(existing);
     }
     this.state.generations.push(structuredClone(generation));
