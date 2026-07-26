@@ -121,6 +121,7 @@ CREATE TABLE generation_requests (
   id text PRIMARY KEY CHECK (id ~ '^gen_[a-f0-9]{32}$'),
   workspace_id text NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
   idempotency_key text NOT NULL,
+  request_hash char(64) NOT NULL CHECK (request_hash ~ '^[a-f0-9]{64}$'),
   input_hash char(64) NOT NULL CHECK (input_hash ~ '^[a-f0-9]{64}$'),
   status generation_status NOT NULL DEFAULT 'draft',
   usage generation_usage NOT NULL DEFAULT 'internal_concept',
