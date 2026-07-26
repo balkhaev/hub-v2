@@ -56,6 +56,17 @@ test("creates ideal production package and shot generations", async () => {
   assert.equal(result.widget.type, "creative.short_drama");
 });
 
+test("creates shot generations without a saved persona", async () => {
+  const { generations, service } = fixture();
+  const result = await service.createShortDrama("ws_demo", {
+    premise: "Два незнакомца встречаются в последнем ночном поезде",
+    durationSeconds: 20,
+  }, "codex");
+  assert.equal(generations.length, result.idealVersion.shotPlan.length);
+  assert.deepEqual(generations[0].input.personaBindings, []);
+  assert.equal(result.creativeJob.status, "ready_for_generation");
+});
+
 test("creative job creation is idempotent", async () => {
   const { service, generations } = fixture();
   const input = {
