@@ -10,6 +10,10 @@ const STATUS_MAP = Object.freeze({
   CANCELLED: "cancelled",
 });
 
+function mappedStatus(providerStatus, fallback = "queued") {
+  return STATUS_MAP[providerStatus] ?? fallback;
+}
+
 export class GenerationDispatchService {
   /**
    * @param {{repository:any, personaService:any, runpodClient:any, generationMediaUrlTtlSeconds?:number, clock?:()=>Date}} options
@@ -34,7 +38,11 @@ export class GenerationDispatchService {
     if (!generation) throw new HttpError(404, "generation_not_found", "Generation request not found");
     if (generation.providerJobId) return generation;
     const payload = {
+      task: "render_shot",
       hubGenerationId: generation.id,
+      creativeJobId: generation.creativeJobId ?? null,
+      creativeVersionId: generation.creativeVersionId ?? null,
+      shotId: generation.shotId ?? null,
       inputHash: generation.inputHash,
       workflow: {
         id: generation.input.workflowId,
@@ -63,20 +71,75 @@ export class GenerationDispatchService {
       resultContract: {
         version: 1,
         expected: "manifest",
-        fields: ["outputs", "model", "runtimeMs", "cost"],
+        fields: [
+          "outputs[].id",
+          "outputs[].url",
+          "outputs[].quality.total",
+          "model",
+          "runtimeMs",
+          "cost",
+        ],
       },
     };
     const submitted = await this.runpodClient.submit(payload);
     if (!submitted.id) throw new HttpError(502, "runpod_invalid_response", "Runpod did not return a job id", submitted);
+    const now = this.clock().toISOString();
     const next = {
       ...generation,
-      status: STATUS_MAP[submitted.status] ?? "queued",
+      status: mappedStatus(submitted.status),
       providerJobId: submitted.id,
       providerState: submitted,
-      dispatchedAt: this.clock().toISOString(),
-      updatedAt: this.clock().toISOString(),
+      dispatchedAt: now,
+      updatedAt: now,
     };
     return this.repository.updateGeneration(next);
+  }
+
+  async dispatchAssembly(creativeJob) {
+    if (!creativeJob?.bestVersion?.assemblyManifest) {
+      throw new HttpError(409, "assembly_manifest_missing", "Creative job has no assembly manifest");
+    }
+    const submitted = await this.runpodClient.submit({
+      task: "assemble_short_drama",
+      creativeJobId: creativeJob.id,
+      creativeVersionId: creativeJob.bestVersion.id,
+      title: creativeJob.bestVersion.title,
+      aspectRatio: creativeJob.brief.aspectRatio,
+      durationSeconds: creativeJob.brief.durationSeconds,
+      language: creativeJob.brief.language,
+      script: creativeJob.bestVersion.script,
+      assemblyManifest: creativeJob.bestVersion.assemblyManifest,
+      output: {
+        container: "mp4",
+        videoCodec: "h264",
+        audioCodec: "aac",
+        normalizeLoudness: true,
+        burnSubtitles: false,
+      },
+      resultContract: {
+        version: 1,
+        expected: "final_asset",
+        fields: ["url", "sha256", "durationSeconds", "width", "height", "runtimeMs", "cost"],
+      },
+    });
+    if (!submitted.id) throw new HttpError(502, "runpod_invalid_response", "Runpod did not return an assembly job id", submitted);
+    return {
+      providerJobId: submitted.id,
+      status: mappedStatus(submitted.status),
+      providerState: submitted,
+      dispatchedAt: this.clock().toISOString(),
+    };
+  }
+
+  async reconcileAssembly(providerJobId) {
+    const providerState = await this.runpodClient.status(providerJobId);
+    return {
+      providerJobId,
+      status: mappedStatus(providerState.status),
+      providerState,
+      output: providerState.output ?? null,
+      checkedAt: this.clock().toISOString(),
+    };
   }
 
   #generationReferenceUrl(workspaceId, referenceId) {
@@ -94,7 +157,7 @@ export class GenerationDispatchService {
     if (!generation) throw new HttpError(404, "generation_not_found", "Generation request not found");
     if (!generation.providerJobId) return generation;
     const status = await this.runpodClient.status(generation.providerJobId);
-    const mapped = STATUS_MAP[status.status] ?? generation.status;
+    const mapped = mappedStatus(status.status, generation.status);
     const next = {
       ...generation,
       status: mapped,
