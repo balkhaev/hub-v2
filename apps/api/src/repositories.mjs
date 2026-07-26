@@ -1,238 +1,81 @@
 import { HttpError } from "./errors.mjs";
 
 function ensureCollections(state) {
-  state.schemaVersion = Math.max(Number(state.schemaVersion ?? 1), 2);
+  state.schemaVersion = Math.max(Number(state.schemaVersion ?? 1), 3);
   state.personas ??= [];
   state.references ??= [];
   state.personaVersions ??= [];
   state.generations ??= [];
+  state.creativeJobs ??= [];
   return state;
 }
-
-function initialState() {
-  return ensureCollections({ schemaVersion: 2 });
-}
-
-function assertSameIdempotentRequest(existing, generation) {
-  if (existing.requestHash !== generation.requestHash) {
-    throw new HttpError(
-      409,
-      "idempotency_conflict",
-      "Idempotency key was already used for a different generation request",
-    );
+function initialState() { return ensureCollections({ schemaVersion: 3 }); }
+function assertSameIdempotentRequest(existing, incoming, label) {
+  if (existing.requestHash !== incoming.requestHash) {
+    throw new HttpError(409, "idempotency_conflict", `Idempotency key was already used for a different ${label}`);
   }
 }
 
-export class JsonHubRepository {
-  /** @param {{read: Function, mutate: Function}} store */
-  constructor(store) {
-    this.store = store;
-  }
-
+class RepositoryBase {
+  async _read() { throw new Error("not implemented"); }
+  async _mutate() { throw new Error("not implemented"); }
   async createPersona(persona, reference, personaVersion) {
-    return this.store.mutate((rawDraft) => {
-      const draft = ensureCollections(rawDraft);
-      if (draft.personas.some((item) => item.id === persona.id)) {
-        throw new HttpError(409, "persona_exists", "Persona already exists");
-      }
-      draft.personas.push(persona);
-      draft.references.push(reference);
-      draft.personaVersions.push(personaVersion);
-      return persona;
+    return this._mutate((draft) => {
+      if (draft.personas.some((item) => item.id === persona.id)) throw new HttpError(409, "persona_exists", "Persona already exists");
+      draft.personas.push(persona); draft.references.push(reference); draft.personaVersions.push(personaVersion); return persona;
     });
   }
-
   async listPersonas(workspaceId) {
-    const state = ensureCollections(await this.store.read());
-    return state.personas
-      .filter((item) => item.workspaceId === workspaceId)
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const state = await this._read();
+    return state.personas.filter((item) => item.workspaceId === workspaceId).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt));
   }
-
   async getPersona(workspaceId, personaId) {
-    const state = ensureCollections(await this.store.read());
-    return state.personas.find(
-      (item) => item.workspaceId === workspaceId && item.id === personaId,
-    ) ?? null;
+    const state = await this._read(); return state.personas.find((item)=>item.workspaceId===workspaceId&&item.id===personaId) ?? null;
   }
-
   async getReference(workspaceId, referenceId) {
-    const state = ensureCollections(await this.store.read());
-    return state.references.find(
-      (item) => item.workspaceId === workspaceId && item.id === referenceId,
-    ) ?? null;
+    const state = await this._read(); return state.references.find((item)=>item.workspaceId===workspaceId&&item.id===referenceId) ?? null;
   }
-
   async getPersonaVersion(workspaceId, personaId, version) {
-    const state = ensureCollections(await this.store.read());
-    return state.personaVersions.find(
-      (item) =>
-        item.workspaceId === workspaceId &&
-        item.personaId === personaId &&
-        item.version === version,
-    ) ?? null;
+    const state = await this._read(); return state.personaVersions.find((item)=>item.workspaceId===workspaceId&&item.personaId===personaId&&item.version===version) ?? null;
   }
-
-  async addReference(
-    workspaceId,
-    personaId,
-    expectedVersion,
-    nextPersona,
-    reference,
-    personaVersion,
-  ) {
-    return this.store.mutate((rawDraft) => {
-      const draft = ensureCollections(rawDraft);
-      const index = draft.personas.findIndex(
-        (item) => item.workspaceId === workspaceId && item.id === personaId,
-      );
-      if (index === -1) {
-        throw new HttpError(404, "persona_not_found", "Persona not found");
-      }
-      if (draft.personas[index].version !== expectedVersion) {
-        throw new HttpError(
-          409,
-          "persona_version_conflict",
-          "Persona changed while the reference was being added",
-          { expectedVersion, actualVersion: draft.personas[index].version },
-        );
-      }
-      draft.personas[index] = nextPersona;
-      draft.references.push(reference);
-      draft.personaVersions.push(personaVersion);
-      return nextPersona;
+  async addReference(workspaceId, personaId, expectedVersion, nextPersona, reference, personaVersion) {
+    return this._mutate((draft) => {
+      const index = draft.personas.findIndex((item)=>item.workspaceId===workspaceId&&item.id===personaId);
+      if (index === -1) throw new HttpError(404,"persona_not_found","Persona not found");
+      if (draft.personas[index].version !== expectedVersion) throw new HttpError(409,"persona_version_conflict","Persona changed while the reference was being added",{expectedVersion,actualVersion:draft.personas[index].version});
+      draft.personas[index]=nextPersona; draft.references.push(reference); draft.personaVersions.push(personaVersion); return nextPersona;
     });
   }
-
   async getGenerationByIdempotencyKey(workspaceId, idempotencyKey) {
-    const state = ensureCollections(await this.store.read());
-    return state.generations.find(
-      (item) =>
-        item.workspaceId === workspaceId && item.idempotencyKey === idempotencyKey,
-    ) ?? null;
+    const state=await this._read(); return state.generations.find((item)=>item.workspaceId===workspaceId&&item.idempotencyKey===idempotencyKey) ?? null;
   }
-
   async createGeneration(generation) {
-    return this.store.mutate((rawDraft) => {
-      const draft = ensureCollections(rawDraft);
-      const existing = draft.generations.find(
-        (item) =>
-          item.workspaceId === generation.workspaceId &&
-          item.idempotencyKey === generation.idempotencyKey,
-      );
-      if (existing) {
-        assertSameIdempotentRequest(existing, generation);
-        return existing;
-      }
-      draft.generations.push(generation);
-      return generation;
+    return this._mutate((draft)=>{
+      const existing=draft.generations.find((item)=>item.workspaceId===generation.workspaceId&&item.idempotencyKey===generation.idempotencyKey);
+      if(existing){assertSameIdempotentRequest(existing,generation,"generation request");return existing;}
+      draft.generations.push(generation);return generation;
     });
   }
-
-  async getGeneration(workspaceId, generationId) {
-    const state = ensureCollections(await this.store.read());
-    return state.generations.find(
-      (item) => item.workspaceId === workspaceId && item.id === generationId,
-    ) ?? null;
+  async getGeneration(workspaceId,generationId){const state=await this._read();return state.generations.find((item)=>item.workspaceId===workspaceId&&item.id===generationId)??null;}
+  async updateGeneration(generation){
+    return this._mutate((draft)=>{const index=draft.generations.findIndex((item)=>item.workspaceId===generation.workspaceId&&item.id===generation.id);if(index===-1)throw new HttpError(404,"generation_not_found","Generation request not found");draft.generations[index]=generation;return generation;});
   }
+  async getCreativeJobByIdempotencyKey(workspaceId,idempotencyKey){const state=await this._read();return state.creativeJobs.find((item)=>item.workspaceId===workspaceId&&item.idempotencyKey===idempotencyKey)??null;}
+  async createCreativeJob(job){
+    return this._mutate((draft)=>{const existing=draft.creativeJobs.find((item)=>item.workspaceId===job.workspaceId&&item.idempotencyKey===job.idempotencyKey);if(existing){assertSameIdempotentRequest(existing,job,"creative job");return existing;}draft.creativeJobs.push(job);return job;});
+  }
+  async getCreativeJob(workspaceId,jobId){const state=await this._read();return state.creativeJobs.find((item)=>item.workspaceId===workspaceId&&item.id===jobId)??null;}
+  async listCreativeJobs(workspaceId){const state=await this._read();return state.creativeJobs.filter((item)=>item.workspaceId===workspaceId).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt));}
+  async updateCreativeJob(job){return this._mutate((draft)=>{const index=draft.creativeJobs.findIndex((item)=>item.workspaceId===job.workspaceId&&item.id===job.id);if(index===-1)throw new HttpError(404,"creative_job_not_found","Creative job not found");draft.creativeJobs[index]=job;return job;});}
 }
 
-export class MemoryHubRepository {
-  constructor() {
-    this.state = initialState();
-  }
-
-  async createPersona(persona, reference, personaVersion) {
-    this.state.personas.push(structuredClone(persona));
-    this.state.references.push(structuredClone(reference));
-    this.state.personaVersions.push(structuredClone(personaVersion));
-    return structuredClone(persona);
-  }
-
-  async listPersonas(workspaceId) {
-    return this.state.personas
-      .filter((item) => item.workspaceId === workspaceId)
-      .map(structuredClone);
-  }
-
-  async getPersona(workspaceId, personaId) {
-    const item = this.state.personas.find(
-      (candidate) => candidate.workspaceId === workspaceId && candidate.id === personaId,
-    );
-    return item ? structuredClone(item) : null;
-  }
-
-  async getReference(workspaceId, referenceId) {
-    const item = this.state.references.find(
-      (candidate) => candidate.workspaceId === workspaceId && candidate.id === referenceId,
-    );
-    return item ? structuredClone(item) : null;
-  }
-
-  async getPersonaVersion(workspaceId, personaId, version) {
-    const item = this.state.personaVersions.find(
-      (candidate) =>
-        candidate.workspaceId === workspaceId &&
-        candidate.personaId === personaId &&
-        candidate.version === version,
-    );
-    return item ? structuredClone(item) : null;
-  }
-
-  async addReference(
-    workspaceId,
-    personaId,
-    expectedVersion,
-    nextPersona,
-    reference,
-    personaVersion,
-  ) {
-    const index = this.state.personas.findIndex(
-      (candidate) => candidate.workspaceId === workspaceId && candidate.id === personaId,
-    );
-    if (index === -1) {
-      throw new HttpError(404, "persona_not_found", "Persona not found");
-    }
-    if (this.state.personas[index].version !== expectedVersion) {
-      throw new HttpError(
-        409,
-        "persona_version_conflict",
-        "Persona changed while the reference was being added",
-      );
-    }
-    this.state.personas[index] = structuredClone(nextPersona);
-    this.state.references.push(structuredClone(reference));
-    this.state.personaVersions.push(structuredClone(personaVersion));
-    return structuredClone(nextPersona);
-  }
-
-  async getGenerationByIdempotencyKey(workspaceId, idempotencyKey) {
-    const item = this.state.generations.find(
-      (candidate) =>
-        candidate.workspaceId === workspaceId &&
-        candidate.idempotencyKey === idempotencyKey,
-    );
-    return item ? structuredClone(item) : null;
-  }
-
-  async createGeneration(generation) {
-    const existing = this.state.generations.find(
-      (item) =>
-        item.workspaceId === generation.workspaceId &&
-        item.idempotencyKey === generation.idempotencyKey,
-    );
-    if (existing) {
-      assertSameIdempotentRequest(existing, generation);
-      return structuredClone(existing);
-    }
-    this.state.generations.push(structuredClone(generation));
-    return structuredClone(generation);
-  }
-
-  async getGeneration(workspaceId, generationId) {
-    const item = this.state.generations.find(
-      (candidate) => candidate.workspaceId === workspaceId && candidate.id === generationId,
-    );
-    return item ? structuredClone(item) : null;
-  }
+export class JsonHubRepository extends RepositoryBase {
+  constructor(store){super();this.store=store;}
+  async _read(){return ensureCollections(await this.store.read());}
+  async _mutate(mutator){return this.store.mutate((raw)=>mutator(ensureCollections(raw)));}
+}
+export class MemoryHubRepository extends RepositoryBase {
+  constructor(){super();this.state=initialState();}
+  async _read(){return structuredClone(this.state);}
+  async _mutate(mutator){const result=await mutator(this.state);return structuredClone(result);}
 }
