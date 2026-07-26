@@ -26,12 +26,18 @@ CREATE TABLE creative_jobs (
   best_version jsonb,
   stage_history jsonb NOT NULL DEFAULT '[]'::jsonb,
   render_summary jsonb,
+  assembly_provider_job_id text,
+  assembly_provider_state jsonb,
+  assembly_dispatched_at timestamptz,
+  final_asset jsonb,
+  last_error jsonb,
   created_by text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (workspace_id, idempotency_key),
   UNIQUE (workspace_id, id),
-  CHECK ((best_version IS NOT NULL) OR status = 'planning')
+  CHECK ((best_version IS NOT NULL) OR status = 'planning'),
+  CHECK ((final_asset IS NULL) OR status IN ('ready_for_review', 'completed'))
 );
 
 ALTER TABLE generation_requests
@@ -45,9 +51,9 @@ ALTER TABLE generation_requests
 
 ALTER TABLE generation_requests
   ADD CONSTRAINT generation_requests_creative_job_fk
-  FOREIGN KEY (creative_job_id)
-  REFERENCES creative_jobs(id)
-  ON DELETE SET NULL;
+  FOREIGN KEY (workspace_id, creative_job_id)
+  REFERENCES creative_jobs(workspace_id, id)
+  ON DELETE RESTRICT;
 
 CREATE INDEX creative_jobs_workspace_updated_idx
   ON creative_jobs(workspace_id, updated_at DESC);
