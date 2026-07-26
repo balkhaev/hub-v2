@@ -30,6 +30,14 @@ function sha256Json(value) {
     .digest("hex");
 }
 
+/** @param {string} workspaceId @param {string} idempotencyKey */
+function deterministicSeed(workspaceId, idempotencyKey) {
+  const digest = createHash("sha256")
+    .update(`${workspaceId}\n${idempotencyKey}`)
+    .digest();
+  return digest.readUInt32BE(0);
+}
+
 export class PersonaService {
   /**
    * @param {{repository: any, objectStore: any, mediaSigner: any, publicOrigin: string, clock?: () => Date, randomSeed?: () => number}} options
@@ -222,6 +230,24 @@ export class PersonaService {
   /** @param {string} workspaceId @param {unknown} input @param {string} actorId */
   async createGenerationRequest(workspaceId, input, actorId) {
     const parsed = parseGenerationRequest(input);
+    const requestHash = sha256Json(parsed);
+    if (parsed.idempotencyKey) {
+      const existing = await this.repository.getGenerationByIdempotencyKey(
+        workspaceId,
+        parsed.idempotencyKey,
+      );
+      if (existing) {
+        if (existing.requestHash !== requestHash) {
+          throw new HttpError(
+            409,
+            "idempotency_conflict",
+            "Idempotency key was already used for a different generation request",
+          );
+        }
+        return this.#generationPayload(existing);
+      }
+    }
+
     const now = this.clock().toISOString();
     const personaSnapshots = [];
 
@@ -290,6 +316,7 @@ export class PersonaService {
       });
     }
 
+    const idempotencyKey = parsed.idempotencyKey ?? createId("idem");
     const normalizedInput = {
       prompt: parsed.prompt,
       negativePrompt: parsed.negativePrompt,
@@ -297,7 +324,11 @@ export class PersonaService {
       aspectRatio: parsed.aspectRatio,
       usage: parsed.usage,
       count: parsed.count,
-      seed: parsed.seed ?? this.randomSeed(),
+      seed:
+        parsed.seed ??
+        (parsed.idempotencyKey
+          ? deterministicSeed(workspaceId, parsed.idempotencyKey)
+          : this.randomSeed()),
       workflowId: parsed.workflowId,
       workflowVersion: parsed.workflowVersion,
       requestedModelId: parsed.requestedModelId,
@@ -308,7 +339,8 @@ export class PersonaService {
       schemaVersion: 2,
       id: createId("gen"),
       workspaceId,
-      idempotencyKey: parsed.idempotencyKey ?? createId("idem"),
+      idempotencyKey,
+      requestHash,
       inputHash,
       status: "ready_for_dispatch",
       provider: "runpod",
