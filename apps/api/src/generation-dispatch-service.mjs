@@ -11,11 +11,20 @@ const STATUS_MAP = Object.freeze({
 });
 
 export class GenerationDispatchService {
-  /** @param {{repository:any, personaService:any, runpodClient:any, clock?:()=>Date}} options */
-  constructor({ repository, personaService, runpodClient, clock = () => new Date() }) {
+  /**
+   * @param {{repository:any, personaService:any, runpodClient:any, generationMediaUrlTtlSeconds?:number, clock?:()=>Date}} options
+   */
+  constructor({
+    repository,
+    personaService,
+    runpodClient,
+    generationMediaUrlTtlSeconds = 1_800,
+    clock = () => new Date(),
+  }) {
     this.repository = repository;
     this.personaService = personaService;
     this.runpodClient = runpodClient;
+    this.generationMediaUrlTtlSeconds = generationMediaUrlTtlSeconds;
     this.clock = clock;
   }
   get configured() { return this.runpodClient.configured; }
@@ -44,7 +53,7 @@ export class GenerationDispatchService {
         personaVersion: snapshot.personaVersion,
         referenceId: snapshot.reference.id,
         referenceSha256: snapshot.reference.sha256,
-        referenceUrl: this.personaService.mediaUrl(workspaceId, snapshot.reference.id, "generation"),
+        referenceUrl: this.#generationReferenceUrl(workspaceId, snapshot.reference.id),
         role: snapshot.role,
         identityMode: snapshot.identityMode,
         referenceStrength: snapshot.referenceStrength,
@@ -68,6 +77,16 @@ export class GenerationDispatchService {
       updatedAt: this.clock().toISOString(),
     };
     return this.repository.updateGeneration(next);
+  }
+
+  #generationReferenceUrl(workspaceId, referenceId) {
+    const token = this.personaService.mediaSigner.issueReferenceUrl({
+      workspaceId,
+      referenceId,
+      purpose: "generation",
+      ttlSeconds: this.generationMediaUrlTtlSeconds,
+    });
+    return `${this.personaService.publicOrigin}/media/references/${encodeURIComponent(referenceId)}?${token.query}`;
   }
 
   async reconcile(workspaceId, generationId) {
