@@ -1,0 +1,17 @@
+{
+  "name": "hub-v2",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Chat-first content operations platform for Luv",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "node apps/api/src/server.mjs",
+    "start": "node apps/api/src/server.mjs",
+    "test": "node --test apps/api/test/*.test.mjs",
+    "check:syntax": "node scripts/check.mjs",
+    "check": "npm run check:syntax && npm test"
+  }
+}

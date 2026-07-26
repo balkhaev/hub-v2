@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Hub v2 · Luv Content Studio</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">L</div>
+          <div>
+            <strong>Hub</strong>
+            <span>luv.club studio</span>
+          </div>
+        </div>
+
+        <nav class="workspace-nav" aria-label="Рабочие каналы">
+          <p class="nav-caption">Workspace</p>
+          <button class="nav-item active" type="button">
+            <span class="nav-icon">#</span>
+            content-studio
+            <span class="nav-count" id="persona-count">0</span>
+          </button>
+          <button class="nav-item" type="button"><span class="nav-icon">#</span> campaigns</button>
+          <button class="nav-item" type="button"><span class="nav-icon">#</span> approvals</button>
+          <button class="nav-item" type="button"><span class="nav-icon">#</span> publishing</button>
+          <button class="nav-item" type="button"><span class="nav-icon">#</span> analytics</button>
+        </nav>
+
+        <div class="sidebar-section">
+          <p class="nav-caption">Agents</p>
+          <div class="agent-row"><span class="presence online"></span><span>@producer</span><small>briefs</small></div>
+          <div class="agent-row"><span class="presence online"></span><span>@visual</span><small>media</small></div>
+          <div class="agent-row"><span class="presence online"></span><span>@analyst</span><small>metrics</small></div>
+        </div>
+
+        <div class="sidebar-footer">
+          <div class="avatar small">BK</div>
+          <div><strong>Content team</strong><span>ws_demo</span></div>
+        </div>
+      </aside>
+
+      <main class="conversation">
+        <header class="channel-header">
+          <div>
+            <h1># content-studio</h1>
+            <p>Персонажи, генерации и ревью медиа</p>
+          </div>
+          <div class="header-actions">
+            <span class="status-pill"><span class="presence online"></span> API online</span>
+            <button class="primary-button" id="open-persona-dialog" type="button">+ NPC card</button>
+          </div>
+        </header>
+
+        <section class="timeline" id="timeline" aria-live="polite">
+          <article class="message system-message">
+            <div class="avatar agent">P</div>
+            <div class="message-content">
+              <div class="message-meta"><strong>@producer</strong><time>сейчас</time></div>
+              <p>Сохраним визуальную личность как версионируемую NPC-карточку. Исходное фото останется immutable reference и будет закрепляться в каждом generation request.</p>
+            </div>
+          </article>
+          <div id="persona-feed"></div>
+        </section>
+
+        <footer class="composer-shell">
+          <div class="selected-persona" id="selected-persona" hidden></div>
+          <form class="composer" id="generation-form">
+            <textarea id="generation-prompt" rows="2" placeholder="Например: @visual сделай вертикальный тизер 9:16 с выбранным персонажем…"></textarea>
+            <div class="composer-footer">
+              <div class="composer-options">
+                <select id="output-type" aria-label="Тип результата">
+                  <option value="image">Image</option>
+                  <option value="video">Video</option>
+                </select>
+                <select id="aspect-ratio" aria-label="Соотношение сторон">
+                  <option value="9:16">9:16</option>
+                  <option value="1:1">1:1</option>
+                  <option value="4:5">4:5</option>
+                  <option value="16:9">16:9</option>
+                </select>
+              </div>
+              <button class="send-button" type="submit" aria-label="Создать generation request">→</button>
+            </div>
+          </form>
+        </footer>
+      </main>
+
+      <aside class="inspector">
+        <div class="inspector-header">
+          <div>
+            <p class="eyebrow">Inspector</p>
+            <h2 id="inspector-title">Persona</h2>
+          </div>
+          <span class="version-badge" id="inspector-version">v1</span>
+        </div>
+        <div id="inspector-body" class="inspector-body">
+          <div class="empty-inspector">
+            <div class="empty-icon">◎</div>
+            <p>Выберите NPC-карточку, чтобы увидеть lineage, consent и visual anchors.</p>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <dialog id="persona-dialog" class="modal">
+      <form method="dialog" class="modal-card" id="persona-form">
+        <header class="modal-header">
+          <div>
+            <p class="eyebrow">Visual identity</p>
+            <h2>Новая NPC-карточка</h2>
+            <p>Одной фотографии достаточно для первой версии. Позже можно добавлять новые references.</p>
+          </div>
+          <button class="icon-button" value="cancel" type="submit" aria-label="Закрыть">×</button>
+        </header>
+
+        <div class="form-grid">
+          <label class="field full">
+            <span>Исходное фото</span>
+            <input id="source-image" name="sourceImage" type="file" accept="image/jpeg,image/png,image/webp" required />
+            <small>JPEG, PNG или WebP · до 15 MB</small>
+          </label>
+
+          <label class="field">
+            <span>Имя персонажа</span>
+            <input id="display-name" name="displayName" maxlength="120" placeholder="Mira" required />
+          </label>
+
+          <label class="field">
+            <span>Тип</span>
+            <select id="subject-type" name="subjectType">
+              <option value="fictional">Fictional NPC</option>
+              <option value="brand_character">Brand character</option>
+              <option value="consenting_adult">Consenting adult</option>
+            </select>
+          </label>
+
+          <label class="field full">
+            <span>Визуальное описание</span>
+            <textarea id="visual-description" name="visualDescription" rows="3" placeholder="Черты лица, волосы, телосложение, стилистика…"></textarea>
+          </label>
+
+          <label class="field full">
+            <span>Неизменяемые черты</span>
+            <input id="immutable-traits" placeholder="green eyes, short dark bob, heart-shaped face" />
+            <small>Через запятую. Эти anchors должны сохраняться между генерациями.</small>
+          </label>
+
+          <label class="field full">
+            <span>Запрещённые отклонения</span>
+            <input id="negative-traits" placeholder="different eye color, facial tattoos" />
+          </label>
+
+          <section class="consent-panel" id="consent-panel" hidden>
+            <label class="checkbox-row">
+              <input id="age-confirmed" type="checkbox" />
+              <span>Подтверждено, что субъект совершеннолетний</span>
+            </label>
+            <label class="field">
+              <span>Основание согласия</span>
+              <input id="consent-basis" placeholder="Signed model release #…" />
+            </label>
+            <label class="field">
+              <span>Кем подтверждено</span>
+              <input id="attested-by" placeholder="producer@luv.club" />
+            </label>
+          </section>
+        </div>
+
+        <p class="form-error" id="form-error" hidden></p>
+        <footer class="modal-footer">
+          <button class="secondary-button" value="cancel" type="submit">Отмена</button>
+          <button class="primary-button" id="save-persona" value="default" type="submit">Сохранить карточку</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <template id="loading-template">
+      <div class="loading-card"><span></span><span></span><span></span></div>
+    </template>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

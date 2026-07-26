@@ -1,0 +1,14 @@
+services:
+  hub:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      HUB_DATA_DIR: /data
+      HUB_PUBLIC_ORIGIN: http://localhost:3000
+    volumes:
+      - hub-data:/data
+
+volumes:
+  hub-data:
