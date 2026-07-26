@@ -109,45 +109,11 @@ export class CreativeService {
       renderVariantsPerShot: brief.renderVariantsPerShot,
       createdAt: now,
     };
-
-    const generationIds = [];
-    for (const shot of bestVersion.shotPlan) {
-      const generationPayload = await this.personaService.createGenerationRequest(
-        workspaceId,
-        {
-          idempotencyKey: actorIdempotencyKey(jobId, shot.shotId),
-          prompt: shot.generationPrompt,
-          negativePrompt: shot.negativePrompt,
-          outputType: "video",
-          aspectRatio: brief.aspectRatio,
-          usage: brief.usage,
-          count: brief.renderVariantsPerShot,
-          workflowId: "short-drama-shot-v1",
-          workflowVersion: "1",
-          personaBindings: brief.characters.map((character) => ({
-            personaId: character.personaId,
-            personaVersion: character.personaVersion,
-            referenceId: character.referenceId,
-            role: character.role,
-            identityMode: character.identityMode,
-            referenceStrength: character.referenceStrength,
-            preserveWardrobe: character.preserveWardrobe,
-          })),
-        },
-        actorId,
-      );
-      const generation = {
-        ...generationPayload.generation,
-        creativeJobId: jobId,
-        creativeVersionId: bestVersion.id,
-        shotId: shot.shotId,
-      };
-      await this.repository.updateGeneration(generation);
-      generationIds.push(generation.id);
-    }
-    bestVersion.generationIds = generationIds;
-
-    const canDispatch = Boolean(brief.autostart && this.generationDispatcher?.configured && generationIds.length);
+    const canDispatch = Boolean(
+      brief.autostart &&
+      this.generationDispatcher?.configured &&
+      bestVersion.shotPlan.length,
+    );
     const job = {
       schemaVersion: 1,
       id: jobId,
@@ -155,9 +121,9 @@ export class CreativeService {
       type: "short_drama",
       idempotencyKey: brief.idempotencyKey ?? createId("idem"),
       requestHash,
-      status: canDispatch ? "generating" : "ready_for_generation",
-      stage: canDispatch ? "rendering_shots" : "ideal_plan_ready",
-      progress: canDispatch ? 0.48 : 0.42,
+      status: "planning",
+      stage: "creating_shot_generations",
+      progress: 0.43,
       brief: {
         ...brief,
         title: brief.title ?? packageResult.best.title,
@@ -169,7 +135,6 @@ export class CreativeService {
         { stage: "brief_validated", at: now },
         { stage: "story_candidates_scored", at: now, count: packageResult.iterations.length },
         { stage: "ideal_plan_selected", at: now, score: bestVersion.scorecard.total },
-        { stage: "shot_generations_created", at: now, count: generationIds.length },
       ],
       hubUrl: `${this.publicOrigin}/?creativeJob=${encodeURIComponent(jobId)}`,
       createdBy: actorId,
@@ -178,6 +143,70 @@ export class CreativeService {
     };
 
     const stored = await this.repository.createCreativeJob(job);
+    if (stored.id !== job.id) {
+      return this.#payload(stored);
+    }
+
+    const generationIds = [];
+    try {
+      for (const shot of bestVersion.shotPlan) {
+        const generationPayload = await this.personaService.createGenerationRequest(
+          workspaceId,
+          {
+            idempotencyKey: actorIdempotencyKey(jobId, shot.shotId),
+            prompt: shot.generationPrompt,
+            negativePrompt: shot.negativePrompt,
+            outputType: "video",
+            aspectRatio: brief.aspectRatio,
+            usage: brief.usage,
+            count: brief.renderVariantsPerShot,
+            workflowId: "short-drama-shot-v1",
+            workflowVersion: "1",
+            personaBindings: brief.characters.map((character) => ({
+              personaId: character.personaId,
+              personaVersion: character.personaVersion,
+              referenceId: character.referenceId,
+              role: character.role,
+              identityMode: character.identityMode,
+              referenceStrength: character.referenceStrength,
+              preserveWardrobe: character.preserveWardrobe,
+            })),
+          },
+          actorId,
+        );
+        const generation = {
+          ...generationPayload.generation,
+          creativeJobId: jobId,
+          creativeVersionId: bestVersion.id,
+          shotId: shot.shotId,
+        };
+        await this.repository.updateGeneration(generation);
+        generationIds.push(generation.id);
+      }
+      stored.bestVersion.generationIds = generationIds;
+      stored.status = canDispatch ? "generating" : "ready_for_generation";
+      stored.stage = canDispatch ? "rendering_shots" : "ideal_plan_ready";
+      stored.progress = canDispatch ? 0.48 : 0.45;
+      stored.updatedAt = this.clock().toISOString();
+      recordStage(stored, "shot_generations_created", {
+        at: stored.updatedAt,
+        count: generationIds.length,
+      });
+      await this.repository.updateCreativeJob(stored);
+    } catch (error) {
+      stored.status = "failed";
+      stored.stage = "shot_generation_failed";
+      stored.lastError = {
+        code: error.code ?? "shot_generation_failed",
+        message: error.message,
+        at: this.clock().toISOString(),
+      };
+      stored.updatedAt = stored.lastError.at;
+      recordStage(stored, "shot_generation_failed", { at: stored.updatedAt });
+      await this.repository.updateCreativeJob(stored);
+      throw error;
+    }
+
     if (canDispatch) {
       try {
         for (const generationId of generationIds) {
@@ -197,7 +226,7 @@ export class CreativeService {
           message: error.message,
           at: this.clock().toISOString(),
         };
-        stored.updatedAt = this.clock().toISOString();
+        stored.updatedAt = stored.lastError.at;
         recordStage(stored, "runpod_dispatch_failed", { at: stored.updatedAt });
         await this.repository.updateCreativeJob(stored);
         throw error;
@@ -316,8 +345,8 @@ export class CreativeService {
       next.progress = Math.max(0.48, 0.48 + (succeeded / total) * 0.4);
     }
     next.updatedAt = this.clock().toISOString();
-    const stored = await this.repository.updateCreativeJob(next);
-    return this.#payload(stored);
+    const updated = await this.repository.updateCreativeJob(next);
+    return this.#payload(updated);
   }
 
   async #reconcileAssembly(job) {
