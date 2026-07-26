@@ -98,7 +98,7 @@ const tools = Object.freeze([
   },
   {
     name: "hub_get_short_drama",
-    description: "Read the current short-drama job, ideal version, scorecard, shot plan, selected shot renders, assembly manifest, and Hub review URL.",
+    description: "Read the current short-drama job, ideal version, scorecard, shot plan, selected shot renders, assembly manifest, final asset, and Hub review URL.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -108,7 +108,7 @@ const tools = Object.freeze([
   },
   {
     name: "hub_reconcile_short_drama",
-    description: "Refresh all Runpod shot jobs, select the strongest provider output per shot, and update aggregate short-drama progress.",
+    description: "Refresh Runpod shot and assembly jobs, select the strongest provider output per shot, and update aggregate short-drama progress.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -134,6 +134,8 @@ function compactCreativeResult(payload) {
       progress: job.progress,
       hubUrl: job.hubUrl,
       renderSummary: job.renderSummary ?? null,
+      finalAsset: job.finalAsset ?? null,
+      lastError: job.lastError ?? null,
     },
     idealVersion: ideal
       ? {
@@ -186,7 +188,7 @@ export function createMcpDispatcher({ client = new HubClient() } = {}) {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: { listChanged: false } },
         serverInfo: SERVER_INFO,
-        instructions: "Use Hub tools for media-production requests. Prefer supplying multiple complete candidate drafts. Do not claim a video exists until the creative job reports ready_for_review or completed.",
+        instructions: "Use Hub tools for media-production requests. Prefer supplying multiple complete candidate drafts. Do not claim a video exists until the creative job reports ready_for_review or completed and includes a final asset or an explicitly described render package.",
       });
     }
     if (message.method === "notifications/initialized") return null;
