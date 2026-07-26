@@ -28,6 +28,7 @@ const objectStore = new LocalObjectStore({
 const mediaSigner = new MediaSigner({
   secret: config.mediaSigningSecret,
   ttlSeconds: config.mediaUrlTtlSeconds,
+  maxTtlSeconds: config.mediaMaxUrlTtlSeconds,
 });
 const personaService = new PersonaService({
   repository,
@@ -43,6 +44,7 @@ const generationDispatcher = new GenerationDispatchService({
   repository,
   personaService,
   runpodClient,
+  generationMediaUrlTtlSeconds: config.generationMediaUrlTtlSeconds,
 });
 const creativeService = new CreativeService({
   repository,
