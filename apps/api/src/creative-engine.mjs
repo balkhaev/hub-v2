@@ -38,6 +38,14 @@ const ARCHETYPES = Object.freeze([
   },
 ]);
 
+const CANONICAL_BEATS = Object.freeze([
+  { beat: "hook", ratio: 0, purpose: "Открыть эмоциональный вопрос до первого свайпа" },
+  { beat: "setup", ratio: 0.12, purpose: "Сделать желание героя однозначным" },
+  { beat: "escalation", ratio: 0.38, purpose: "Увеличить цену решения" },
+  { beat: "reversal", ratio: 0.66, purpose: "Переосмыслить предыдущие кадры" },
+  { beat: "payoff", ratio: 0.84, purpose: "Закрыть эмоциональный вопрос и оставить послевкусие" },
+]);
+
 function clamp(value, min = 0, max = 1) {
   return Math.max(min, Math.min(max, value));
 }
@@ -57,6 +65,86 @@ function sentence(value) {
 }
 function characterLabel(brief, index = 0) {
   return brief.characters[index]?.role ?? (index === 0 ? "герой" : "второй герой");
+}
+
+function normalizeDraftBeats(draft, brief) {
+  const fallbackAction = [
+    draft.hook,
+    `Герой формулирует желание: ${draft.logline}`,
+    "Цена решения становится личной и необратимой.",
+    "Новая информация меняет смысл уже увиденного.",
+    draft.payoff,
+  ];
+  return CANONICAL_BEATS.map((canonical, index) => {
+    const supplied = draft.beats[index] ?? null;
+    return {
+      beat: canonical.beat,
+      atSecond:
+        supplied?.atSecond ??
+        (canonical.beat === "payoff"
+          ? Math.max(brief.durationSeconds - 6, Math.round(brief.durationSeconds * canonical.ratio))
+          : Math.round(brief.durationSeconds * canonical.ratio)),
+      purpose: supplied?.purpose ?? canonical.purpose,
+      action: supplied?.action ?? fallbackAction[index],
+      sourceBeat: supplied?.beat ?? null,
+    };
+  });
+}
+
+function makeAgentCandidate(brief, draft, candidateIndex) {
+  const fallbackDialogue = [
+    { speaker: characterLabel(brief, 0), line: "Скажи мне то, что ты боялся сказать." },
+    { speaker: characterLabel(brief, 1), line: "Правда изменила бы всё раньше времени." },
+    { speaker: characterLabel(brief, 0), line: "Тогда пусть она изменит всё сейчас." },
+  ];
+  return {
+    archetype: "agent_draft",
+    label: `Agent draft · v1.${candidateIndex + 1}`,
+    title: draft.title ?? brief.title ?? `Draft ${candidateIndex + 1}`,
+    logline: draft.logline,
+    hook: draft.hook,
+    premise: sentence(brief.premise),
+    beats: normalizeDraftBeats(draft, brief),
+    dialogue: draft.dialogue.length ? draft.dialogue : fallbackDialogue,
+    payoff: draft.payoff,
+    refinementNotes: [
+      "Authored by calling agent and normalized by Hub",
+      "Mapped to canonical hook/setup/escalation/reversal/payoff beats",
+    ],
+  };
+}
+
+function trimWords(value, maxWords) {
+  const items = value.trim().split(/\s+/);
+  return items.length <= maxWords ? value.trim() : `${items.slice(0, maxWords).join(" ")}…`;
+}
+
+function refineCandidate(previous, brief, candidateIndex, iteration) {
+  const candidate = structuredClone(previous);
+  candidate.label = `Refinement · v${iteration}.${candidateIndex + 1}`;
+  candidate.archetype = `refinement_${candidateIndex + 1}`;
+  if (candidateIndex === 0) {
+    candidate.hook = trimWords(previous.hook, 18);
+    if (!/[?:]$/.test(candidate.hook)) candidate.hook = `${candidate.hook}:`;
+  } else if (candidateIndex === 1) {
+    candidate.beats[3].atSecond = Math.max(4, Math.round(brief.durationSeconds * 0.58));
+    candidate.beats[3].action = `Раньше раскрываем поворот: ${candidate.beats[3].action}`;
+  } else {
+    candidate.beats[4].action = `${candidate.beats[4].action} Финальный образ визуально рифмуется с первым кадром.`;
+  }
+  candidate.dialogue = candidate.dialogue.map((line) => ({
+    ...line,
+    line: trimWords(line.line, 14),
+  }));
+  candidate.refinementNotes = [
+    ...(candidate.refinementNotes ?? []),
+    candidateIndex === 0
+      ? "Hook compressed"
+      : candidateIndex === 1
+        ? "Reversal moved earlier"
+        : "Looping payoff strengthened",
+  ];
+  return candidate;
 }
 
 function makeCandidate(brief, archetype, candidateIndex, iteration, previous) {
@@ -136,7 +224,7 @@ export function scoreStoryCandidate(candidate, brief) {
   const retention = clamp(
     0.67 +
       (candidate.beats.some((beat) => beat.beat === "reversal") ? 0.12 : 0) +
-      (candidate.hook.includes("?") || candidate.hook.includes(":") ? 0.05 : 0) +
+      (candidate.hook.includes("?") || candidate.hook.includes(":" ) ? 0.05 : 0) +
       seed * 0.04,
   );
   const personaContinuity = brief.characters.length ? 0.93 : 0.82;
@@ -232,12 +320,22 @@ export function produceIdealStoryPackage(brief) {
   let previousWinner = null;
   let best = null;
   for (let iteration = 1; iteration <= brief.maxIterations; iteration += 1) {
-    const candidates = Array.from({ length: brief.variationCount }, (_, candidateIndex) => {
-      const archetype = ARCHETYPES[(candidateIndex + iteration - 1) % ARCHETYPES.length];
-      const candidate = makeCandidate(brief, archetype, candidateIndex, iteration, previousWinner);
-      const scorecard = scoreStoryCandidate(candidate, brief);
-      return { ...candidate, scorecard };
-    }).sort((a, b) => b.scorecard.total - a.scorecard.total);
+    const rawCandidates =
+      iteration === 1 && brief.candidateDrafts.length
+        ? brief.candidateDrafts.map((draft, candidateIndex) =>
+            makeAgentCandidate(brief, draft, candidateIndex),
+          )
+        : previousWinner
+          ? Array.from({ length: brief.variationCount }, (_, candidateIndex) =>
+              refineCandidate(previousWinner, brief, candidateIndex, iteration),
+            )
+          : Array.from({ length: brief.variationCount }, (_, candidateIndex) => {
+              const archetype = ARCHETYPES[(candidateIndex + iteration - 1) % ARCHETYPES.length];
+              return makeCandidate(brief, archetype, candidateIndex, iteration, previousWinner);
+            });
+    const candidates = rawCandidates
+      .map((candidate) => ({ ...candidate, scorecard: scoreStoryCandidate(candidate, brief) }))
+      .sort((a, b) => b.scorecard.total - a.scorecard.total);
     const winner = candidates[0];
     iterations.push({ iteration, candidates, winnerLabel: winner.label, winnerScore: winner.scorecard.total });
     if (!best || winner.scorecard.total > best.scorecard.total) best = winner;
