@@ -5,7 +5,6 @@ const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(currentDir, "../../..");
 const DEV_MEDIA_SECRET = "development-media-secret-change-me";
 
-/** @param {string | undefined} value @param {number} fallback */
 function positiveInteger(value, fallback) {
   if (value === undefined) return fallback;
   const parsed = Number(value);
@@ -27,6 +26,14 @@ export function loadConfig(env = process.env) {
     .split(",")
     .map((value) => value.trim().replace(/\/$/, ""))
     .filter(Boolean);
+  const generationMediaUrlTtlSeconds = positiveInteger(
+    env.HUB_GENERATION_MEDIA_URL_TTL_SECONDS,
+    1_800,
+  );
+  const mediaMaxUrlTtlSeconds = Math.max(
+    generationMediaUrlTtlSeconds,
+    positiveInteger(env.HUB_MEDIA_MAX_URL_TTL_SECONDS, 3_600),
+  );
 
   return {
     repositoryRoot,
@@ -40,6 +47,8 @@ export function loadConfig(env = process.env) {
     requireContextHeaders,
     mediaSigningSecret,
     mediaUrlTtlSeconds: positiveInteger(env.HUB_MEDIA_URL_TTL_SECONDS, 300),
+    generationMediaUrlTtlSeconds,
+    mediaMaxUrlTtlSeconds,
     maxImageBytes: positiveInteger(env.HUB_MAX_IMAGE_BYTES, 15 * 1024 * 1024),
   };
 }
