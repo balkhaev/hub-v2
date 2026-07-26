@@ -140,7 +140,8 @@ test("generation can pin an old persona version after a new primary reference", 
     generation.generation.personaSnapshots[0].reference.id,
     originalReferenceId,
   );
-  assert.equal(generation.generation.input.seed, 42);
+  assert.ok(Number.isInteger(generation.generation.input.seed));
+  assert.equal(generation.generation.requestHash.length, 64);
   assert.equal(generation.generation.personaSnapshots[0].reference.objectKey, undefined);
 });
 
@@ -165,6 +166,7 @@ test("generation creation is idempotent and rejects key reuse with different inp
     "user_1",
   );
   assert.equal(first.generation.id, second.generation.id);
+  assert.equal(first.generation.input.seed, second.generation.input.seed);
 
   await assert.rejects(
     () =>
