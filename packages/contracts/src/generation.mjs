@@ -10,7 +10,6 @@ export const GENERATION_USAGES = Object.freeze([
   "owned_media",
 ]);
 
-/** @param {unknown} value @param {string} field @param {number} max */
 function requiredString(value, field, max = 4_000) {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new TypeError(`${field} is required`);
@@ -21,22 +20,16 @@ function requiredString(value, field, max = 4_000) {
   }
   return normalized;
 }
-
-/** @param {unknown} value @param {string} field @param {number} max */
 function optionalString(value, field, max = 4_000) {
   if (value === undefined || value === null || value === "") return null;
   return requiredString(value, field, max);
 }
-
-/** @param {unknown} value @param {string} field @param {readonly string[]} allowed */
 function enumValue(value, field, allowed) {
   if (typeof value !== "string" || !allowed.includes(value)) {
     throw new TypeError(`${field} must be one of: ${allowed.join(", ")}`);
   }
   return value;
 }
-
-/** @param {unknown} value @param {string} field @param {number} fallback */
 function numberBetween(value, field, fallback) {
   const number = value === undefined ? fallback : Number(value);
   if (!Number.isFinite(number) || number < 0 || number > 1) {
@@ -44,8 +37,6 @@ function numberBetween(value, field, fallback) {
   }
   return number;
 }
-
-/** @param {unknown} value @param {string} field */
 function optionalPositiveInteger(value, field) {
   if (value === undefined || value === null || value === "") return null;
   const number = Number(value);
@@ -54,8 +45,6 @@ function optionalPositiveInteger(value, field) {
   }
   return number;
 }
-
-/** @param {unknown} value */
 function optionalSeed(value) {
   if (value === undefined || value === null || value === "") return null;
   const number = Number(value);
@@ -65,13 +54,12 @@ function optionalSeed(value) {
   return number;
 }
 
-/** @param {unknown} input */
 export function parseGenerationRequest(input) {
   if (!input || typeof input !== "object") {
     throw new TypeError("Request body must be an object");
   }
-  if (!Array.isArray(input.personaBindings) || input.personaBindings.length === 0) {
-    throw new TypeError("personaBindings must contain at least one persona");
+  if (!Array.isArray(input.personaBindings)) {
+    throw new TypeError("personaBindings must be an array");
   }
   if (input.personaBindings.length > 4) {
     throw new TypeError("personaBindings supports at most four personas per generation");
@@ -157,7 +145,6 @@ export function parseGenerationRequest(input) {
   };
 }
 
-/** @param {Record<string, any>} generation */
 export function generationRequestWidget(generation) {
   return createWidget({
     type: "generation.request",
