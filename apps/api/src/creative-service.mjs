@@ -107,41 +107,39 @@ export class CreativeService {
     };
 
     const generationIds = [];
-    if (brief.characters.length > 0) {
-      for (const shot of bestVersion.shotPlan) {
-        const generationPayload = await this.personaService.createGenerationRequest(
-          workspaceId,
-          {
-            idempotencyKey: actorIdempotencyKey(jobId, shot.shotId),
-            prompt: shot.generationPrompt,
-            negativePrompt: shot.negativePrompt,
-            outputType: "video",
-            aspectRatio: brief.aspectRatio,
-            usage: brief.usage,
-            count: brief.renderVariantsPerShot,
-            workflowId: "short-drama-shot-v1",
-            workflowVersion: "1",
-            personaBindings: brief.characters.map((character) => ({
-              personaId: character.personaId,
-              personaVersion: character.personaVersion,
-              referenceId: character.referenceId,
-              role: character.role,
-              identityMode: character.identityMode,
-              referenceStrength: character.referenceStrength,
-              preserveWardrobe: character.preserveWardrobe,
-            })),
-          },
-          actorId,
-        );
-        const generation = {
-          ...generationPayload.generation,
-          creativeJobId: jobId,
-          creativeVersionId: bestVersion.id,
-          shotId: shot.shotId,
-        };
-        await this.repository.updateGeneration(generation);
-        generationIds.push(generation.id);
-      }
+    for (const shot of bestVersion.shotPlan) {
+      const generationPayload = await this.personaService.createGenerationRequest(
+        workspaceId,
+        {
+          idempotencyKey: actorIdempotencyKey(jobId, shot.shotId),
+          prompt: shot.generationPrompt,
+          negativePrompt: shot.negativePrompt,
+          outputType: "video",
+          aspectRatio: brief.aspectRatio,
+          usage: brief.usage,
+          count: brief.renderVariantsPerShot,
+          workflowId: "short-drama-shot-v1",
+          workflowVersion: "1",
+          personaBindings: brief.characters.map((character) => ({
+            personaId: character.personaId,
+            personaVersion: character.personaVersion,
+            referenceId: character.referenceId,
+            role: character.role,
+            identityMode: character.identityMode,
+            referenceStrength: character.referenceStrength,
+            preserveWardrobe: character.preserveWardrobe,
+          })),
+        },
+        actorId,
+      );
+      const generation = {
+        ...generationPayload.generation,
+        creativeJobId: jobId,
+        creativeVersionId: bestVersion.id,
+        shotId: shot.shotId,
+      };
+      await this.repository.updateGeneration(generation);
+      generationIds.push(generation.id);
     }
     bestVersion.generationIds = generationIds;
 
@@ -177,12 +175,26 @@ export class CreativeService {
 
     const stored = await this.repository.createCreativeJob(job);
     if (canDispatch) {
-      for (const generationId of generationIds) {
-        await this.generationDispatcher.dispatch(workspaceId, generationId);
+      try {
+        for (const generationId of generationIds) {
+          await this.generationDispatcher.dispatch(workspaceId, generationId);
+        }
+        stored.stageHistory.push({ stage: "runpod_jobs_dispatched", at: this.clock().toISOString(), count: generationIds.length });
+        stored.updatedAt = this.clock().toISOString();
+        await this.repository.updateCreativeJob(stored);
+      } catch (error) {
+        stored.status = "failed";
+        stored.stage = "dispatch_failed";
+        stored.lastError = {
+          code: error.code ?? "dispatch_failed",
+          message: error.message,
+          at: this.clock().toISOString(),
+        };
+        stored.updatedAt = this.clock().toISOString();
+        stored.stageHistory.push({ stage: "runpod_dispatch_failed", at: stored.updatedAt });
+        await this.repository.updateCreativeJob(stored);
+        throw error;
       }
-      stored.stageHistory.push({ stage: "runpod_jobs_dispatched", at: this.clock().toISOString(), count: generationIds.length });
-      stored.updatedAt = this.clock().toISOString();
-      await this.repository.updateCreativeJob(stored);
     }
     return this.#payload(stored);
   }
