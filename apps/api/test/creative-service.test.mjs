@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CreativeService } from "../src/creative-service.mjs";
+import { CreativeService, selectBestProviderOutput } from "../src/creative-service.mjs";
 import { MemoryHubRepository } from "../src/repositories.mjs";
 
 const PERSONA = "per_0123456789abcdef0123456789abcdef";
@@ -83,4 +83,20 @@ test("autostart dispatches every generated shot when Runpod is configured", asyn
   }, "codex");
   assert.equal(result.creativeJob.status, "generating");
   assert.equal(dispatched.length, result.idealVersion.shotPlan.length);
+});
+
+test("selects the strongest provider output for a shot", () => {
+  const selected = selectBestProviderOutput({
+    id: "gen_00000000000000000000000000000001",
+    shotId: "shot-01",
+    providerJobId: "rp-1",
+    providerOutput: {
+      outputs: [
+        { id: "a", url: "https://media/a.mp4", quality: { total: 0.71 } },
+        { id: "b", url: "https://media/b.mp4", quality: { total: 0.93 } },
+      ],
+    },
+  });
+  assert.equal(selected.outputId, "b");
+  assert.equal(selected.quality, 0.93);
 });
