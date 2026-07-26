@@ -229,6 +229,16 @@ export function creativeJobWidget(job) {
             shotCount: best.shotPlan.length,
             generationCount: best.generationIds.length,
             renderSelectionCount: best.renderSelections?.length ?? 0,
+            assemblyReady: Boolean(best.assemblyManifest),
+          }
+        : null,
+      finalAsset: job.finalAsset
+        ? {
+            url: job.finalAsset.url ?? job.finalAsset.assetUrl ?? null,
+            sha256: job.finalAsset.sha256 ?? null,
+            durationSeconds: job.finalAsset.durationSeconds ?? null,
+            width: job.finalAsset.width ?? null,
+            height: job.finalAsset.height ?? null,
           }
         : null,
       hubUrl: job.hubUrl,
