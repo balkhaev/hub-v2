@@ -1,0 +1,5 @@
+[mcp_servers.luv-hub]
+command = "node"
+args = ["apps/mcp/src/server.mjs"]
+env = { HUB_API_URL = "http://127.0.0.1:3000", HUB_WORKSPACE_ID = "ws_demo", HUB_ACTOR_ID = "codex" }
+startup_timeout_ms = 10000
