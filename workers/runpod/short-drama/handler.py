@@ -52,13 +52,10 @@ def _run(command: list[str], timeout: int = 1800) -> subprocess.CompletedProcess
     )
     if result.returncode != 0:
         raise WorkerError(
-            f"Command failed ({result.returncode}): {' '.join(command)}\n{result.stderr[-4000:]}"
+            f"Command failed ({result.returncode}): {' '.join(command)}\n"
+            f"{result.stderr[-4000:]}"
         )
     return result
-
-
-def _s3_client():
-    return boto3.client("s3", endpoint_url=OUTPUT_ENDPOINT_URL)
 
 
 def _sha256(path: Path) -> str:
@@ -85,15 +82,17 @@ def _media_info(path: Path) -> dict[str, Any]:
     )
     payload = json.loads(result.stdout or "{}")
     streams = payload.get("streams", [])
-    video = next((stream for stream in streams if stream.get("codec_type") == "video"), {})
-    has_audio = any(stream.get("codec_type") == "audio" for stream in streams)
+    video = next(
+        (stream for stream in streams if stream.get("codec_type") == "video"),
+        {},
+    )
     format_info = payload.get("format", {})
     return {
         "durationSeconds": float(format_info.get("duration") or 0),
         "sizeBytes": int(format_info.get("size") or path.stat().st_size),
         "width": int(video.get("width") or 0),
         "height": int(video.get("height") or 0),
-        "hasAudio": has_audio,
+        "hasAudio": any(stream.get("codec_type") == "audio" for stream in streams),
         "frameRate": video.get("r_frame_rate"),
     }
 
@@ -129,15 +128,19 @@ def _technical_quality(info: dict[str, Any], aspect_ratio: str) -> float:
     )
 
 
+def _s3_client():
+    return boto3.client("s3", endpoint_url=OUTPUT_ENDPOINT_URL)
+
+
 def _upload(path: Path, key: str, content_type: str | None = None) -> dict[str, Any]:
     bucket = _require(OUTPUT_BUCKET, "OUTPUT_BUCKET")
-    content_type = content_type or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    media_type = content_type or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     client = _s3_client()
     client.upload_file(
         str(path),
         bucket,
         key,
-        ExtraArgs={"ContentType": content_type},
+        ExtraArgs={"ContentType": media_type},
     )
     if OUTPUT_PUBLIC_BASE_URL:
         url = f"{OUTPUT_PUBLIC_BASE_URL}/{key}"
@@ -151,13 +154,14 @@ def _upload(path: Path, key: str, content_type: str | None = None) -> dict[str, 
         "url": url,
         "objectKey": key,
         "bucket": bucket,
-        "contentType": content_type,
+        "contentType": media_type,
         "sha256": _sha256(path),
         "sizeBytes": path.stat().st_size,
     }
 
 
 def _download(url: str, destination: Path) -> Path:
+    destination.parent.mkdir(parents=True, exist_ok=True)
     with requests.get(url, stream=True, timeout=(15, 300)) as response:
         response.raise_for_status()
         with destination.open("wb") as target:
@@ -191,7 +195,8 @@ def _workflow_path(workflow: dict[str, Any]) -> Path:
         if candidate.is_file():
             return candidate
     raise WorkerError(
-        f"No ComfyUI workflow found for {workflow_id}@{workflow_version}; checked {candidates}"
+        f"No ComfyUI workflow found for {workflow_id}@{workflow_version}; "
+        f"checked {candidates}"
     )
 
 
@@ -244,7 +249,11 @@ def _download_comfyui_output(descriptor: dict[str, Any], destination: Path) -> P
             "type": descriptor.get("type", "output"),
         }
     )
-    with requests.get(f"{COMFYUI_URL}/view?{query}", stream=True, timeout=(15, 300)) as response:
+    with requests.get(
+        f"{COMFYUI_URL}/view?{query}",
+        stream=True,
+        timeout=(15, 300),
+    ) as response:
         response.raise_for_status()
         with destination.open("wb") as target:
             shutil.copyfileobj(response.raw, target)
@@ -271,91 +280,99 @@ def _render_shot(payload: dict[str, Any]) -> dict[str, Any]:
     generation_id = str(_require(payload.get("hubGenerationId"), "hubGenerationId"))
     aspect_ratio = str(generation.get("aspectRatio") or "9:16")
     personas = payload.get("personas") or []
+    reference_files: list[Path] = []
 
-    with tempfile.TemporaryDirectory(prefix="hub-shot-") as temporary:
-        temporary_dir = Path(temporary)
-        reference_files: list[Path] = []
-        COMFYUI_INPUT_DIR.mkdir(parents=True, exist_ok=True)
-        for index, persona in enumerate(personas):
-            reference_url = persona.get("referenceUrl")
-            if not reference_url:
-                continue
-            reference_name = f"hub-{generation_id}-{index}.png"
-            local_reference = COMFYUI_INPUT_DIR / reference_name
-            _download(reference_url, local_reference)
-            reference_files.append(local_reference)
+    try:
+        with tempfile.TemporaryDirectory(prefix="hub-shot-") as temporary:
+            temporary_dir = Path(temporary)
+            COMFYUI_INPUT_DIR.mkdir(parents=True, exist_ok=True)
+            for index, persona in enumerate(personas):
+                reference_url = persona.get("referenceUrl")
+                if not reference_url:
+                    continue
+                local_reference = (
+                    COMFYUI_INPUT_DIR / f"hub-{generation_id}-{index}-{uuid.uuid4().hex}.img"
+                )
+                reference_files.append(local_reference)
+                _download(reference_url, local_reference)
 
-        workflow = json.loads(_workflow_path(workflow_spec).read_text("utf-8"))
-        width, height = _aspect_dimensions(aspect_ratio)
-        tokens: dict[str, Any] = {
-            "{{prompt}}": generation.get("prompt") or "",
-            "{{negative_prompt}}": generation.get("negativePrompt") or "",
-            "{{seed}}": int(generation.get("seed") or 0),
-            "{{output_count}}": int(generation.get("count") or 1),
-            "{{width}}": width,
-            "{{height}}": height,
-        }
-        for index, reference_path in enumerate(reference_files):
-            tokens[f"{{{{reference_{index}_filename}}}}"] = reference_path.name
-        resolved_workflow = _replace_tokens(workflow, tokens)
-
-        started = time.monotonic()
-        prompt_id = _queue_comfyui(resolved_workflow)
-        history = _wait_for_comfyui(prompt_id)
-        descriptors = _output_descriptors(history)
-        if not descriptors:
-            raise WorkerError(f"ComfyUI prompt {prompt_id} completed without media outputs")
-
-        outputs = []
-        for index, descriptor in enumerate(descriptors):
-            suffix = Path(descriptor["filename"]).suffix or ".mp4"
-            local_output = temporary_dir / f"take-{index + 1}{suffix}"
-            _download_comfyui_output(descriptor, local_output)
-            info = _media_info(local_output)
-            key = (
-                f"{OUTPUT_PREFIX}/creative/{payload.get('creativeJobId') or 'unassigned'}/"
-                f"{shot_id}/{generation_id}/take-{index + 1}{suffix}"
-            )
-            uploaded = _upload(local_output, key)
-            technical_score = _technical_quality(info, aspect_ratio)
-            candidate = {
-                "id": f"{generation_id}-take-{index + 1}",
-                **uploaded,
-                **info,
-                "quality": {
-                    "total": technical_score,
-                    "technical": technical_score,
-                    "evaluator": "technical-v1",
-                },
-                "comfyui": {
-                    "promptId": prompt_id,
-                    "nodeId": descriptor.get("nodeId"),
-                },
+            workflow = json.loads(_workflow_path(workflow_spec).read_text("utf-8"))
+            width, height = _aspect_dimensions(aspect_ratio)
+            tokens: dict[str, Any] = {
+                "{{prompt}}": generation.get("prompt") or "",
+                "{{negative_prompt}}": generation.get("negativePrompt") or "",
+                "{{seed}}": int(generation.get("seed") or 0),
+                "{{output_count}}": int(generation.get("count") or 1),
+                "{{width}}": width,
+                "{{height}}": height,
             }
-            external_score = _external_quality(candidate, payload)
-            if external_score is not None:
-                candidate["quality"] = {
-                    **candidate["quality"],
-                    "total": max(0.0, min(1.0, external_score)),
-                    "external": external_score,
-                    "evaluator": "external+technical-v1",
+            for index, reference_path in enumerate(reference_files):
+                tokens[f"{{{{reference_{index}_filename}}}}"] = reference_path.name
+            resolved_workflow = _replace_tokens(workflow, tokens)
+
+            started = time.monotonic()
+            prompt_id = _queue_comfyui(resolved_workflow)
+            history = _wait_for_comfyui(prompt_id)
+            descriptors = _output_descriptors(history)
+            if not descriptors:
+                raise WorkerError(
+                    f"ComfyUI prompt {prompt_id} completed without media outputs"
+                )
+
+            outputs = []
+            for index, descriptor in enumerate(descriptors):
+                suffix = Path(descriptor["filename"]).suffix or ".mp4"
+                local_output = temporary_dir / f"take-{index + 1}{suffix}"
+                _download_comfyui_output(descriptor, local_output)
+                info = _media_info(local_output)
+                key = (
+                    f"{OUTPUT_PREFIX}/creative/"
+                    f"{payload.get('creativeJobId') or 'unassigned'}/"
+                    f"{shot_id}/{generation_id}/take-{index + 1}{suffix}"
+                )
+                uploaded = _upload(local_output, key)
+                technical_score = _technical_quality(info, aspect_ratio)
+                candidate = {
+                    "id": f"{generation_id}-take-{index + 1}",
+                    **uploaded,
+                    **info,
+                    "quality": {
+                        "total": technical_score,
+                        "technical": technical_score,
+                        "evaluator": "technical-v1",
+                    },
+                    "comfyui": {
+                        "promptId": prompt_id,
+                        "nodeId": descriptor.get("nodeId"),
+                    },
                 }
-            outputs.append(candidate)
+                external_score = _external_quality(candidate, payload)
+                if external_score is not None:
+                    candidate["quality"] = {
+                        **candidate["quality"],
+                        "total": max(0.0, min(1.0, external_score)),
+                        "external": external_score,
+                        "evaluator": "external+technical-v1",
+                    }
+                outputs.append(candidate)
 
+            return {
+                "task": "render_shot",
+                "hubGenerationId": generation_id,
+                "creativeJobId": payload.get("creativeJobId"),
+                "creativeVersionId": payload.get("creativeVersionId"),
+                "shotId": shot_id,
+                "inputHash": payload.get("inputHash"),
+                "outputs": outputs,
+                "model": {"workflow": workflow_spec},
+                "runtimeMs": round((time.monotonic() - started) * 1000),
+            }
+    finally:
         for reference_path in reference_files:
-            reference_path.unlink(missing_ok=True)
-
-        return {
-            "task": "render_shot",
-            "hubGenerationId": generation_id,
-            "creativeJobId": payload.get("creativeJobId"),
-            "creativeVersionId": payload.get("creativeVersionId"),
-            "shotId": shot_id,
-            "inputHash": payload.get("inputHash"),
-            "outputs": outputs,
-            "model": {"workflow": workflow_spec},
-            "runtimeMs": round((time.monotonic() - started) * 1000),
-        }
+            try:
+                reference_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _normalized_clip(source: Path, destination: Path, width: int, height: int) -> Path:
@@ -431,12 +448,19 @@ def _normalized_clip(source: Path, destination: Path, width: int, height: int) -
 
 def _assemble_short_drama(payload: dict[str, Any]) -> dict[str, Any]:
     manifest = payload.get("assemblyManifest") or {}
-    ordered_shots = sorted(manifest.get("orderedShots") or [], key=lambda item: item.get("ordinal", 0))
+    ordered_shots = sorted(
+        manifest.get("orderedShots") or [],
+        key=lambda item: item.get("ordinal", 0),
+    )
     if not ordered_shots:
         raise WorkerError("assemblyManifest.orderedShots is empty")
     creative_job_id = str(_require(payload.get("creativeJobId"), "creativeJobId"))
-    creative_version_id = str(_require(payload.get("creativeVersionId"), "creativeVersionId"))
-    aspect_ratio = str(payload.get("aspectRatio") or manifest.get("aspectRatio") or "9:16")
+    creative_version_id = str(
+        _require(payload.get("creativeVersionId"), "creativeVersionId")
+    )
+    aspect_ratio = str(
+        payload.get("aspectRatio") or manifest.get("aspectRatio") or "9:16"
+    )
     width, height = _aspect_dimensions(aspect_ratio)
 
     with tempfile.TemporaryDirectory(prefix="hub-assembly-") as temporary:
@@ -475,7 +499,10 @@ def _assemble_short_drama(payload: dict[str, Any]) -> dict[str, Any]:
             ]
         )
         info = _media_info(final_path)
-        key = f"{OUTPUT_PREFIX}/creative/{creative_job_id}/{creative_version_id}/final.mp4"
+        key = (
+            f"{OUTPUT_PREFIX}/creative/{creative_job_id}/"
+            f"{creative_version_id}/final.mp4"
+        )
         uploaded = _upload(final_path, key, "video/mp4")
         return {
             "task": "assemble_short_drama",
