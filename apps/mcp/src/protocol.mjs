@@ -6,7 +6,7 @@ const SERVER_INFO = Object.freeze({ name: "luv-hub", version: "0.2.0" });
 const tools = Object.freeze([
   {
     name: "hub_create_short_drama",
-    description: "Create and start a Hub quality-loop for a vertical short drama. Hub generates and scores story variants, selects an ideal production version, creates shot-level video generation requests, and dispatches them to Runpod when configured.",
+    description: "Create and start a Hub quality-loop for a vertical short drama. When capable, provide 2–6 distinct candidateDrafts authored by the calling agent; Hub normalizes, scores, refines, versions and selects the strongest production package, then creates shot-level video generations and dispatches them to Runpod when configured.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -41,6 +41,52 @@ const tools = Object.freeze([
             },
           },
         },
+        candidateDrafts: {
+          type: "array",
+          minItems: 2,
+          maxItems: 6,
+          description: "Distinct complete story candidates authored by the calling agent. Prefer three meaningfully different dramatic mechanisms.",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["logline", "hook", "beats", "payoff"],
+            properties: {
+              title: { type: "string" },
+              logline: { type: "string" },
+              hook: { type: "string" },
+              beats: {
+                type: "array",
+                minItems: 3,
+                maxItems: 8,
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["action"],
+                  properties: {
+                    beat: { type: "string" },
+                    atSecond: { type: "integer", minimum: 0 },
+                    purpose: { type: "string" },
+                    action: { type: "string" },
+                  },
+                },
+              },
+              dialogue: {
+                type: "array",
+                maxItems: 16,
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["speaker", "line"],
+                  properties: {
+                    speaker: { type: "string" },
+                    line: { type: "string" },
+                  },
+                },
+              },
+              payoff: { type: "string" },
+            },
+          },
+        },
         variationCount: { type: "integer", minimum: 2, maximum: 6, default: 3 },
         renderVariantsPerShot: { type: "integer", minimum: 1, maximum: 4, default: 2 },
         maxIterations: { type: "integer", minimum: 1, maximum: 5, default: 3 },
@@ -52,7 +98,7 @@ const tools = Object.freeze([
   },
   {
     name: "hub_get_short_drama",
-    description: "Read the current short-drama job, ideal version, scorecard, shot plan, generation IDs, and Hub review URL.",
+    description: "Read the current short-drama job, ideal version, scorecard, shot plan, selected shot renders, assembly manifest, and Hub review URL.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -62,7 +108,7 @@ const tools = Object.freeze([
   },
   {
     name: "hub_reconcile_short_drama",
-    description: "Refresh all Runpod shot jobs and update the short-drama progress. Call this after generation has had time to run.",
+    description: "Refresh all Runpod shot jobs, select the strongest provider output per shot, and update aggregate short-drama progress.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -76,6 +122,49 @@ const tools = Object.freeze([
     inputSchema: { type: "object", additionalProperties: false, properties: {} },
   },
 ]);
+
+function compactCreativeResult(payload) {
+  const job = payload?.creativeJob ?? {};
+  const ideal = payload?.idealVersion ?? null;
+  return {
+    creativeJob: {
+      id: job.id,
+      status: job.status,
+      stage: job.stage,
+      progress: job.progress,
+      hubUrl: job.hubUrl,
+      renderSummary: job.renderSummary ?? null,
+    },
+    idealVersion: ideal
+      ? {
+          id: ideal.id,
+          title: ideal.title,
+          logline: ideal.logline,
+          hook: ideal.hook,
+          scorecard: ideal.scorecard,
+          script: ideal.script,
+          shotPlan: ideal.shotPlan,
+          generationIds: ideal.generationIds,
+          renderSelections: ideal.renderSelections ?? [],
+          assemblyManifest: ideal.assemblyManifest ?? null,
+        }
+      : null,
+  };
+}
+
+function compactPersonaResult(payload) {
+  return {
+    items: (payload?.items ?? []).map((item) => ({
+      personaId: item.persona?.id,
+      displayName: item.persona?.displayName,
+      subjectType: item.persona?.subjectType,
+      status: item.persona?.status,
+      version: item.persona?.version,
+      primaryReferenceId: item.persona?.primaryReferenceId,
+      consentStatus: item.persona?.consent?.status,
+    })),
+  };
+}
 
 function textResult(value, isError = false) {
   const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
@@ -97,7 +186,7 @@ export function createMcpDispatcher({ client = new HubClient() } = {}) {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: { listChanged: false } },
         serverInfo: SERVER_INFO,
-        instructions: "Use Hub tools for media-production requests. Do not claim a video exists until the creative job reports ready_for_review or completed.",
+        instructions: "Use Hub tools for media-production requests. Prefer supplying multiple complete candidate drafts. Do not claim a video exists until the creative job reports ready_for_review or completed.",
       });
     }
     if (message.method === "notifications/initialized") return null;
@@ -109,10 +198,10 @@ export function createMcpDispatcher({ client = new HubClient() } = {}) {
     const args = message.params?.arguments ?? {};
     try {
       let value;
-      if (name === "hub_create_short_drama") value = await client.createShortDrama(args);
-      else if (name === "hub_get_short_drama") value = await client.getShortDrama(args.jobId);
-      else if (name === "hub_reconcile_short_drama") value = await client.reconcileShortDrama(args.jobId);
-      else if (name === "hub_list_personas") value = await client.listPersonas();
+      if (name === "hub_create_short_drama") value = compactCreativeResult(await client.createShortDrama(args));
+      else if (name === "hub_get_short_drama") value = compactCreativeResult(await client.getShortDrama(args.jobId));
+      else if (name === "hub_reconcile_short_drama") value = compactCreativeResult(await client.reconcileShortDrama(args.jobId));
+      else if (name === "hub_list_personas") value = compactPersonaResult(await client.listPersonas());
       else return rpcError(id, -32602, `Unknown tool: ${name}`);
       return rpcResult(id, textResult(value));
     } catch (error) {
